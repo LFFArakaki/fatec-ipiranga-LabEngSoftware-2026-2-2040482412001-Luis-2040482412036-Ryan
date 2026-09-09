@@ -1,0 +1,14 @@
+services:
+  frontend:
+    container_name: "react-frontend"
+    build:
+      context: ./frontend
+    ports:
+      - "80:5173"
+
+  backend:
+    container_name: "fastapi-backend"
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
