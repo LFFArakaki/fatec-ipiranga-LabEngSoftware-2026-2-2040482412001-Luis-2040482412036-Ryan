@@ -7,6 +7,9 @@ services:
       - "80:5173"
 
   backend:
+    environment:
+      API_ID: ${API_ID}
+      API_HASH: ${API_HASH}
     container_name: "fastapi-backend"
     build:
       context: ./backend

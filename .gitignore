@@ -1,3 +1,5 @@
 __pycache__
 .venv-tcc
 node_modules
+.env
+users.db
