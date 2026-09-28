@@ -11,9 +11,39 @@ import {
   BarChart2,
   Settings,
 } from 'lucide-react'
+import { ConectarTelegram } from '../components/ConectarTelegram'
+import { removerRedesConectadas } from '../redesSociais'
+import { extrairMensagemErro } from '../api'
 
 interface EditarPerfilProps {
   onNavigate: (screen: string) => void;
+}
+
+const REDES_EM_BREVE = [
+  { nome: 'WhatsApp', sigla: 'WA', cor: 'bg-[#25D366]' },
+  { nome: 'Instagram', sigla: 'IG', cor: 'bg-gradient-to-tr from-[#F58529] via-[#DD2A7B] to-[#8134AF]' },
+  { nome: 'Facebook', sigla: 'FB', cor: 'bg-[#1877F2]' },
+]
+
+function ListaRedesSociais({ codUsuario }: { codUsuario: number | string | null }) {
+  return (
+    <div className="divide-y divide-slate-100">
+      <ConectarTelegram codUsuario={codUsuario} />
+      {REDES_EM_BREVE.map((rede) => (
+        <div key={rede.nome} className="p-4 lg:px-8 lg:py-5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 opacity-60">
+            <div className={`w-10 h-10 ${rede.cor} rounded-full flex items-center justify-center`}>
+              <span className="text-white font-bold text-xs">{rede.sigla}</span>
+            </div>
+            <span className="font-medium text-slate-900">{rede.nome}</span>
+          </div>
+          <span className="px-2.5 py-1 text-xs font-semibold text-slate-500 bg-slate-100 rounded-full">
+            Em breve
+          </span>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
@@ -23,21 +53,9 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
   const [email, setEmail] = useState('')
   const [dataNascimento, setDataNascimento] = useState('')
   const [namePublic, setNamePublic] = useState(true)
-  const [whatsappConnected, setWhatsappConnected] = useState(false)
-  const [instagramConnected, setInstagramConnected] = useState(false)
-  const [facebookConnected, setFacebookConnected] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loadingExclusao, setLoadingExclusao] = useState(false)
   const [erro, setErro] = useState('')
-
-  const extrairMensagemErro = (dados: any, fallback: string) => {
-    if (typeof dados === 'string') return dados;
-    if (dados?.detail) {
-      if (Array.isArray(dados.detail)) return dados.detail[0]?.msg || fallback;
-      if (typeof dados.detail === 'string') return dados.detail;
-    }
-    return fallback;
-  }
 
   const handleDataChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let valor = e.target.value.replace(/\D/g, '')
@@ -75,9 +93,6 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
             setEmail(dados.email || '')
             setDataNascimento(dados.data_nascimento || '')
             setNamePublic(dados.namePublic ?? true)
-            setWhatsappConnected(dados.whatsappConnected ?? false)
-            setInstagramConnected(dados.instagramConnected ?? false)
-            setFacebookConnected(dados.facebookConnected ?? false)
           } else {
              setErro('Usuário não encontrado. Faça login novamente.')
           }
@@ -137,9 +152,6 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
           email, 
           data_nascimento: dataNascimento,
           namePublic,
-          whatsappConnected, 
-          instagramConnected, 
-          facebookConnected
         })
       })
 
@@ -184,6 +196,7 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
         throw new Error(extrairMensagemErro(dados, 'Erro ao excluir conta.'))
       }
 
+      removerRedesConectadas(userId)
       localStorage.removeItem('token')
       localStorage.removeItem('userEmail')
       onNavigate('login')
@@ -331,51 +344,8 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
             <h3 className="text-sm font-semibold text-slate-900 mb-3 px-1">
               Redes Sociais
             </h3>
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden divide-y divide-slate-100">
-              <div className="p-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-[#25D366] rounded-full flex items-center justify-center">
-                    <span className="text-white font-bold text-xs">WA</span>
-                  </div>
-                  <span className="font-medium text-slate-900">WhatsApp</span>
-                </div>
-                <div 
-                  onClick={() => setWhatsappConnected(!whatsappConnected)}
-                  className={`w-11 h-6 rounded-full relative cursor-pointer transition-colors ${whatsappConnected ? 'bg-brand-500' : 'bg-slate-300'}`}
-                >
-                  <div className={`w-5 h-5 bg-white rounded-full absolute top-0.5 shadow-sm transition-all ${whatsappConnected ? 'right-0.5' : 'left-0.5'}`}></div>
-                </div>
-              </div>
-
-              <div className="p-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-tr from-[#F58529] via-[#DD2A7B] to-[#8134AF] rounded-full flex items-center justify-center">
-                    <span className="text-white font-bold text-xs">IG</span>
-                  </div>
-                  <span className="font-medium text-slate-900">Instagram</span>
-                </div>
-                <div 
-                  onClick={() => setInstagramConnected(!instagramConnected)}
-                  className={`w-11 h-6 rounded-full relative cursor-pointer transition-colors ${instagramConnected ? 'bg-brand-500' : 'bg-slate-300'}`}
-                >
-                  <div className={`w-5 h-5 bg-white rounded-full absolute top-0.5 shadow-sm transition-all ${instagramConnected ? 'right-0.5' : 'left-0.5'}`}></div>
-                </div>
-              </div>
-
-              <div className="p-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-[#1877F2] rounded-full flex items-center justify-center">
-                    <span className="text-white font-bold text-xs">FB</span>
-                  </div>
-                  <span className="font-medium text-slate-900">Facebook</span>
-                </div>
-                <div 
-                  onClick={() => setFacebookConnected(!facebookConnected)}
-                  className={`w-11 h-6 rounded-full relative cursor-pointer transition-colors ${facebookConnected ? 'bg-brand-500' : 'bg-slate-300'}`}
-                >
-                  <div className={`w-5 h-5 bg-white rounded-full absolute top-0.5 shadow-sm transition-all ${facebookConnected ? 'right-0.5' : 'left-0.5'}`}></div>
-                </div>
-              </div>
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <ListaRedesSociais codUsuario={userId} />
             </div>
           </div>
 
@@ -532,6 +502,16 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
                     />
                   </div>
                 </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-8 pt-8 pb-3">
+                  <h3 className="text-lg font-bold text-slate-900">Redes Sociais</h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Conecte suas contas para centralizar as conversas em um só lugar.
+                  </p>
+                </div>
+                <ListaRedesSociais codUsuario={userId} />
               </div>
 
               <div className="bg-white p-8 rounded-2xl border border-red-100 shadow-sm">

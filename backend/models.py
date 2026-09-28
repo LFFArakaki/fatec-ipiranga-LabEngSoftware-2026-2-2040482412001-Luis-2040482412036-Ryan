@@ -22,3 +22,10 @@ class ConectarTG(BaseModel):
 class SessaoTG(BaseModel):
     numero: str
     codigo: str
+
+class EsqueciSenha(BaseModel):
+    email: str
+
+class RedefinirSenha(BaseModel):
+    token: str
+    nova_senha: str

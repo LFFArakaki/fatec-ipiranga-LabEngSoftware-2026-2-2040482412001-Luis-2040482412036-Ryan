@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ArrowLeft, CheckCircle2 } from 'lucide-react'
+import { MENSAGEM_SENHA_INVALIDA, senhaValida } from '../validarSenha'
 
 interface CadastroProps {
   onNavigate: (screen: string) => void;
@@ -32,6 +33,11 @@ export function Cadastro({ onNavigate }: CadastroProps) {
   const handleCadastro = async (e: React.FormEvent) => {
     e.preventDefault()
     setErro('')
+
+    if (!senhaValida(senha)) {
+      setErro(MENSAGEM_SENHA_INVALIDA)
+      return
+    }
 
     if (senha !== confirmarSenha) {
       setErro('As senhas não coincidem.')
@@ -257,6 +263,9 @@ export function Cadastro({ onNavigate }: CadastroProps) {
                   placeholder="••••••••"
                   className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition-all text-slate-900 placeholder:text-slate-400"
                 />
+                <p className="text-xs text-slate-500">
+                  Mínimo de 8 caracteres, com uma letra maiúscula e um número.
+                </p>
               </div>
 
               <div className="space-y-1.5 lg:space-y-2">

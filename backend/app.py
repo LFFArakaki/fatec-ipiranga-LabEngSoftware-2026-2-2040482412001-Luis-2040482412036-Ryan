@@ -1,19 +1,33 @@
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, Cookie, BackgroundTasks, status
+from fastapi.responses import JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 from typing import Annotated
-from contextlib import asynccontextmanager
-from models import Usuario, Conta, ConectarTG, SessaoTG
-from telethon import TelegramClient, events
+from models import Usuario, Conta, ConectarTG, SessaoTG, EsqueciSenha, RedefinirSenha
+from telethon import TelegramClient
 from telethon.sessions import StringSession
+from fastapi_mail import FastMail, MessageSchema, MessageType, ConnectionConfig
+from jose import jwt
 import os
 import dotenv
+import utils
 
 dotenv.load_dotenv()
 
 API_ID = os.getenv('API_ID')
 API_HASH = os.getenv('API_HASH')
-
+SECRET_KEY = os.getenv('SECRET_KEY')
+ALGORITHM = os.getenv('ALGORITHM')
 logins_tg = {}
+
+conf = ConnectionConfig(
+    MAIL_SERVER="smtp.gmail.com",
+    MAIL_PORT=587,
+    MAIL_USERNAME="luisfellipe.arakaki@gmail.com",
+    MAIL_PASSWORD="unjc lidj nxkv ozfp",
+    MAIL_FROM="luisfellipe.arakaki@gmail.com",
+    MAIL_STARTTLS=True,
+    MAIL_SSL_TLS=False,
+)
 
 async def lifespan(app: FastAPI):
     create_db_and_tables()
@@ -79,12 +93,14 @@ def editar_usuario(cod_usuario: int, session: SessionDep, usuario_novo: Usuario)
     return usuario
 
 @app.post("/login/")
-def realizar_login(dados: Usuario, session: SessionDep):
+def realizar_login(dados: Usuario, session: SessionDep, response: Response):
     statement = select(Usuario).where(Usuario.email == dados.email)
     usuario = session.exec(statement).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="User not found")
     if dados.senha == usuario.senha:
+        token = jwt.encode({"user_id": usuario.cod}, SECRET_KEY, algorithm=ALGORITHM)
+        response.set_cookie(key="access_token", value=token, httponly=True)
         return usuario.cod
     else:
         return "Senha errada"
@@ -125,7 +141,7 @@ async def send_code(payload: ConectarTG, session: SessionDep):
 
 
 @app.post("/auth/tg/sign-in")
-async def sign_in(payload: SessaoTG, session: SessionDep):
+async def sign_in(payload: SessaoTG, session: SessionDep, access_token: Annotated[str | None, Cookie()] = None):
     telefone = payload.numero.strip()
     
     if telefone not in logins_tg:
@@ -147,8 +163,11 @@ async def sign_in(payload: SessaoTG, session: SessionDep):
         
         del logins_tg[telefone]
 
+        decode_token = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+
         conta = Conta(
-            cod_usuario=1,
+            cod_usuario=user_id,
             aplicativo="Telegram",
             usuario_app=telefone,
             sessao=client.session.save()
@@ -158,9 +177,49 @@ async def sign_in(payload: SessaoTG, session: SessionDep):
         session.commit()
         session.refresh(conta)
 
-        await client.disconnect()
         return "Autenticação concluída com sucesso!"
     
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erro na autenticação: {str(e)}")
-        
+
+@app.post("/auth/esqueci-senha")
+async def redefinir_senha(dados: EsqueciSenha, session: SessionDep, background_tasks: BackgroundTasks):
+    try:
+        statement = select(Usuario).where(Usuario.email == dados.email)
+        usuario = session.exec(statement).first()
+        if not usuario:
+            raise HTTPException(status_code=404, detail="User not found")
+        else:
+            token = utils.create_reset_password_token(dados.email)
+            url = f"Aqui está o link para redefinir sua senha: http://localhost:5173/redefinir-senha?token={token}"
+            message = MessageSchema(
+                subject="Password Reset Instructions",
+                recipients=[dados.email],
+                body=url,
+                subtype="html"
+            )
+            template_name = "mail/password_reset.html"
+
+            fm = FastMail(conf)
+            background_tasks.add_task(fm.send_message, message)
+
+            return "Certo! Verifique seu e-mail para redefinir sua senha."
+    except Exception as e:
+        return "Erro ao enviar e-mail de redefinição de senha: {str(e)}"
+
+@app.post("/auth/redefinir-senha")
+async def redefinir_senha(dados: RedefinirSenha, session: SessionDep):
+    try:
+        usuario_email = jwt.decode(dados.token, SECRET_KEY, algorithms=[ALGORITHM]).get("email")
+        statement = select(Usuario).where(Usuario.email == usuario_email)
+        usuario = session.exec(statement).first()
+        if not usuario:
+            raise HTTPException(status_code=404, detail="User not found")
+        else:
+            usuario.senha = dados.nova_senha
+            session.add(usuario)
+            session.commit()
+            session.refresh(usuario)
+            return "Senha redefinida com sucesso!"
+    except Exception as e:
+        return "Erro ao redefinir senha: {str(e)}"

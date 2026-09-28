@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { MessageSquare, Eye, EyeOff } from 'lucide-react'
+import { MENSAGEM_SENHA_INVALIDA, senhaValida } from '../validarSenha'
 
 interface LoginProps {
   onNavigate: (screen: string) => void;
@@ -19,6 +20,11 @@ export function Login({ onNavigate } : LoginProps) {
     // Validação no front para evitar campos vazios
     if (!email.trim() || !senha.trim()) {
       setErro('Preencha o e-mail e a senha.')
+      return
+    }
+
+    if (!senhaValida(senha)) {
+      setErro(MENSAGEM_SENHA_INVALIDA)
       return
     }
 
@@ -123,9 +129,18 @@ export function Login({ onNavigate } : LoginProps) {
             </div>
 
             <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-slate-700">
-                Senha
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-slate-700">
+                  Senha
+                </label>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('esqueci-senha')}
+                  className="text-sm text-brand-600 font-medium hover:underline outline-none bg-transparent border-none p-0 cursor-pointer"
+                >
+                  Esqueci minha senha
+                </button>
+              </div>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
