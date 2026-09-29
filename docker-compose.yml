@@ -10,6 +10,11 @@ services:
     environment:
       API_ID: ${API_ID}
       API_HASH: ${API_HASH}
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: ${ALGORITHM}
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      MAIL_FROM: ${MAIL_FROM}
     container_name: "fastapi-backend"
     build:
       context: ./backend

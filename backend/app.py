@@ -22,9 +22,9 @@ logins_tg = {}
 conf = ConnectionConfig(
     MAIL_SERVER="smtp.gmail.com",
     MAIL_PORT=587,
-    MAIL_USERNAME="luisfellipe.arakaki@gmail.com",
-    MAIL_PASSWORD="unjc lidj nxkv ozfp",
-    MAIL_FROM="luisfellipe.arakaki@gmail.com",
+    MAIL_USERNAME=''.join(os.getenv('MAIL_USERNAME')),
+    MAIL_PASSWORD=''.join(os.getenv('MAIL_PASSWORD')),
+    MAIL_FROM=''.join(os.getenv('MAIL_FROM')),
     MAIL_STARTTLS=True,
     MAIL_SSL_TLS=False,
 )
