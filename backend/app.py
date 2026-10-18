@@ -1,12 +1,15 @@
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, Cookie, BackgroundTasks, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, Cookie, BackgroundTasks
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlmodel import Session, SQLModel, create_engine, select
 from typing import Annotated
-from models_payload import ConectarTG, SessaoTG, EsqueciSenha, RedefinirSenha, Login
-from models_db import Usuario, Conta
+from models_payload import ConectarTG, SessaoTG, EsqueciSenha, RedefinirSenha
+from models_db import Usuario, Conta, UsuarioVisivel
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from jose import jwt
+from datetime import datetime, timezone
+from datetime import timedelta
 import bcrypt
 import os
 import dotenv
@@ -36,6 +39,8 @@ async def lifespan(app: FastAPI):
     
 app = FastAPI(lifespan=lifespan)
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/")
+
 sqlite_file_name = "users.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 connect_args = {"check_same_thread": False}
@@ -57,12 +62,12 @@ def cadastrar_usuario(usuario: Usuario, session: SessionDep) -> Usuario:
     session.refresh(usuario)
     return usuario
  
-@app.get("/listar/usuarios/")
+@app.get("/listar/usuarios/", response_model=list[UsuarioVisivel])
 def listar_usuarios(
     session: SessionDep,
     offset: int = 0,
     limit: Annotated[int, Query(le=100)] = 100,
-) -> list[Usuario]:
+):
     usuarios = session.exec(select(Usuario).offset(offset).limit(limit)).all()
     return usuarios
  
@@ -74,9 +79,17 @@ def buscar_usuario(username: str, session: SessionDep) -> Usuario:
         raise HTTPException(status_code=404, detail="User not found")
     return usuario
  
-@app.delete("/excluir/usuarios/{cod_usuario}")
-def deletar_usuario(cod_usuario: int, session: SessionDep):
-    usuario = session.get(Usuario, cod_usuario)
+@app.delete("/excluir/")
+def deletar_usuario(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+        
+    usuario = session.get(Usuario, user_id)
     if not usuario:
         raise HTTPException(status_code=404, detail="User not found")
     session.delete(usuario)
@@ -96,23 +109,46 @@ def editar_usuario(cod_usuario: int, session: SessionDep, usuario_novo: Usuario)
     return usuario
 
 @app.post("/login/")
-def realizar_login(dados: Login, session: SessionDep, response: Response):
-    statement = select(Usuario).where(Usuario.email == dados.email)
+def realizar_login(dados: Annotated[OAuth2PasswordRequestForm, Depends()], session: SessionDep, response: Response):
+    statement = select(Usuario).where(Usuario.email == dados.username)
     usuario = session.exec(statement).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="User not found")
-    if bcrypt.checkpw(dados.senha.encode(), usuario.senha):
-        token = jwt.encode({"user_id": usuario.cod}, SECRET_KEY, algorithm=ALGORITHM)
-        response.set_cookie(key="access_token", value=token, httponly=True)
-        return usuario.cod
+    if bcrypt.checkpw(dados.password.encode(), usuario.senha):
+        token_data = {"user_id": usuario.cod, "exp": datetime.now(timezone.utc) + timedelta(minutes=60)}
+        token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+        return {"access_token": token, "token_type": "bearer"}
     else:
-        return "Senha errada"
+        raise HTTPException(status_code=400, detail="Senha errada")
+
+@app.get("/perfil/")
+def obter_perfil(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    statement = select(Usuario).where(Usuario.cod == user_id)
+    usuario = session.exec(statement).first()
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    return usuario
 
 @app.post("/auth/tg/codigo")
-async def send_code(payload: ConectarTG, session: SessionDep):
+async def send_code(payload: ConectarTG, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     telefone = payload.numero.strip()
 
-    statement = select(Conta).where(Conta.usuario_app == telefone, Conta.aplicativo == "Telegram")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    
+
+    statement = select(Conta).where(Conta.cod_usuario == user_id, Conta.usuario_app == telefone, Conta.aplicativo == "Telegram")
     conta = session.exec(statement).first()
     print(conta)
     if conta:
@@ -143,7 +179,7 @@ async def send_code(payload: ConectarTG, session: SessionDep):
             raise HTTPException(status_code=400, detail=f"Erro ao enviar código: {str(e)}")
 
 @app.post("/auth/tg/sign-in")
-async def sign_in(payload: SessaoTG, session: SessionDep, access_token: Annotated[str | None, Cookie()] = None):
+async def sign_in(payload: SessaoTG, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     telefone = payload.numero.strip()
     
     if telefone not in logins_tg:
@@ -165,8 +201,11 @@ async def sign_in(payload: SessaoTG, session: SessionDep, access_token: Annotate
         
         del logins_tg[telefone]
 
-        decode_token = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
+        try:
+                decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                user_id = decode_token.get("user_id")
+        except jwt.PyJWTError:
+                raise HTTPException(status_code=401, detail="Token inválido")
 
         conta = Conta(
             cod_usuario=user_id,

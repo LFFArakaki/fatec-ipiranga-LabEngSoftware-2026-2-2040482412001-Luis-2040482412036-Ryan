@@ -7,9 +7,6 @@ class SessaoTG(BaseModel):
     numero: str
     codigo: str
 
-class Login(BaseModel):
-    email: str
-
 class EsqueciSenha(BaseModel):
     email: str
 
