@@ -3,9 +3,10 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlmodel import Session, SQLModel, create_engine, select
 from typing import Annotated
 from models_payload import ConectarTG, SessaoTG, EsqueciSenha, RedefinirSenha
-from models_db import Usuario, Conta, UsuarioVisivel
+from models_db import Conversa, Usuario, Conta, UsuarioVisivel
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import Chat, Channel, User
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from jose import jwt
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ API_HASH = os.getenv('API_HASH')
 SECRET_KEY = os.getenv('SECRET_KEY')
 ALGORITHM = os.getenv('ALGORITHM')
 logins_tg = {}
+clients_tg = {}
 
 conf = ConnectionConfig(
     MAIL_SERVER="smtp.gmail.com",
@@ -62,17 +64,17 @@ def cadastrar_usuario(usuario: Usuario, session: SessionDep) -> Usuario:
     session.refresh(usuario)
     return usuario
  
-@app.get("/listar/usuarios/", response_model=list[UsuarioVisivel])
+@app.get("/listar/usuarios/")
 def listar_usuarios(
     session: SessionDep,
     offset: int = 0,
     limit: Annotated[int, Query(le=100)] = 100,
-):
+) -> list[UsuarioVisivel]:
     usuarios = session.exec(select(Usuario).offset(offset).limit(limit)).all()
     return usuarios
  
 @app.get("/listar/usuarios/{username}")
-def buscar_usuario(username: str, session: SessionDep) -> Usuario:
+def buscar_usuario(username: str, session: SessionDep) -> UsuarioVisivel:
     statement = select(Usuario).where(Usuario.username == username)
     usuario = session.exec(statement).first()
     if not usuario:
@@ -137,6 +139,49 @@ def obter_perfil(session: SessionDep, token: Annotated[str, Depends(oauth2_schem
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     return usuario
 
+@app.get("/perfil/conversas/")
+def listar_conversas(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    statement = select(Conversa).where(Conversa.cod_usuario == user_id)
+    conversas = session.exec(statement).all()
+    return conversas
+
+@app.get("/perfil/conversas/{chat_id}")
+async def buscar_conversa(chat_id: int, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+    messages = []
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    statement = select(Usuario).where(Usuario.cod == user_id)
+    usuario = session.exec(statement).first()
+    statement = select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == chat_id)
+    conversa = session.exec(statement).first()
+
+    async for message in clients_tg[user_id].iter_messages(chat_id, limit=20):
+        remetente = usuario.nome if message.out else conversa.nome_chat
+        texto = message.text if message.text else "[Mensagem sem texto / Mídia]"
+        
+        messages.append({
+            "remetente": remetente,
+            "texto": texto,
+            "data": message.date.strftime('%d/%m/%Y %H:%M')
+        })
+
+    return messages
+
 @app.post("/auth/tg/codigo")
 async def send_code(payload: ConectarTG, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     telefone = payload.numero.strip()
@@ -152,18 +197,18 @@ async def send_code(payload: ConectarTG, session: SessionDep, token: Annotated[s
     conta = session.exec(statement).first()
     print(conta)
     if conta:
-        client = TelegramClient(StringSession(conta.sessao), API_ID, API_HASH)
-        await client.connect()
+        clients_tg[user_id] = TelegramClient(StringSession(conta.sessao), API_ID, API_HASH)
+        await clients_tg[user_id].connect()
         raise HTTPException(status_code=400, detail="Conta já cadastrada para este usuário.")
     else:
-        client = TelegramClient(StringSession(), API_ID, API_HASH)
-        await client.connect()
+        clients_tg[user_id] = TelegramClient(StringSession(), API_ID, API_HASH)
+        await clients_tg[user_id].connect()
         
         try:
-            send_code_result = await client.send_code_request(telefone)
+            send_code_result = await clients_tg[user_id].send_code_request(telefone)
             
             logins_tg[telefone] = {
-                "client": client,
+                "client": clients_tg[user_id],
                 "phone_code_hash": send_code_result.phone_code_hash
             }
             
@@ -173,7 +218,7 @@ async def send_code(payload: ConectarTG, session: SessionDep, token: Annotated[s
             }
             
         except Exception as e:
-            await client.disconnect()
+            await clients_tg[user_id].disconnect()
             if telefone in logins_tg:
                 del logins_tg[telefone]
             raise HTTPException(status_code=400, detail=f"Erro ao enviar código: {str(e)}")
@@ -217,6 +262,27 @@ async def sign_in(payload: SessaoTG, session: SessionDep, token: Annotated[str, 
         session.add(conta)
         session.commit()
         session.refresh(conta)
+
+        async for dialog in client.iter_dialogs(limit=50):
+            if isinstance(dialog.entity, User):
+                nome = f"{dialog.entity.first_name or ''} {dialog.entity.last_name or ''}".strip()
+            elif isinstance(dialog.entity, Chat):
+                nome = dialog.entity.title
+            elif isinstance(dialog.entity, Channel):
+                nome = dialog.entity.title
+            else:
+                nome = dialog.name
+
+        conversa = Conversa(
+            cod_usuario=user_id,
+            app="Telegram",
+            chat_id=dialog.id,
+            nome_chat=nome
+        )
+
+        session.add(conversa)
+        session.commit()
+        session.refresh(conversa)
 
         return "Autenticação concluída com sucesso!"
     
@@ -264,3 +330,19 @@ async def redefinir_senha(dados: RedefinirSenha, session: SessionDep):
             return "Senha redefinida com sucesso!"
     except Exception as e:
         return "Erro ao redefinir senha: {str(e)}"
+
+@app.post("/logout/")
+async def logout(token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    
+    if user_id in clients_tg:
+        await clients_tg[user_id].disconnect()
+        del clients_tg[user_id]
+    
+    return "Successfully logged out and disconnected from apps."

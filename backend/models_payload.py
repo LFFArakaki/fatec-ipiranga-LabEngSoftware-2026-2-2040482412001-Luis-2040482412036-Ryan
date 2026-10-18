@@ -13,3 +13,8 @@ class EsqueciSenha(BaseModel):
 class RedefinirSenha(BaseModel):
     token: str
     nova_senha: str
+
+class EnviarMensagem(BaseModel):
+    app: str
+    chat_id: str
+    mensagem: str

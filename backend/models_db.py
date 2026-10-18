@@ -16,3 +16,10 @@ class Conta(SQLModel, table=True):
     aplicativo: str = Field(index=True)
     usuario_app: str = Field(index=True)
     sessao: str = Field(index=True)
+
+class Conversa(SQLModel, table=True):
+    cod: int = Field(primary_key=True)
+    cod_usuario: int = Field(index=True)
+    app: str = Field(index=True)
+    chat_id: int = Field(index=True)
+    nome_chat: str = Field(index=True)
