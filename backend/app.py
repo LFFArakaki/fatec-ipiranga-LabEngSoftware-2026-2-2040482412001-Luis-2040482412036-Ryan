@@ -1,11 +1,11 @@
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, Cookie, BackgroundTasks, status
-from fastapi.responses import JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 from typing import Annotated
-from models import Usuario, Conta, ConectarTG, SessaoTG, EsqueciSenha, RedefinirSenha
+from models_payload import ConectarTG, SessaoTG, EsqueciSenha, RedefinirSenha, Login
+from models_db import Usuario, Conta
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from fastapi_mail import FastMail, MessageSchema, MessageType, ConnectionConfig
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from jose import jwt
 import bcrypt
 import os
@@ -96,7 +96,7 @@ def editar_usuario(cod_usuario: int, session: SessionDep, usuario_novo: Usuario)
     return usuario
 
 @app.post("/login/")
-def realizar_login(dados: Usuario, session: SessionDep, response: Response):
+def realizar_login(dados: Login, session: SessionDep, response: Response):
     statement = select(Usuario).where(Usuario.email == dados.email)
     usuario = session.exec(statement).first()
     if not usuario:

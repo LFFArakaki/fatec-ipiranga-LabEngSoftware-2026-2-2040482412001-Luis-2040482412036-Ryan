@@ -1,5 +1,4 @@
 from sqlmodel import Field, SQLModel
-from pydantic import BaseModel
 
 class Usuario(SQLModel, table=True):
     cod: int = Field(primary_key=True)
@@ -15,17 +14,3 @@ class Conta(SQLModel, table=True):
     aplicativo: str = Field(index=True)
     usuario_app: str = Field(index=True)
     sessao: str = Field(index=True)
-
-class ConectarTG(BaseModel):
-    numero: str
-
-class SessaoTG(BaseModel):
-    numero: str
-    codigo: str
-
-class EsqueciSenha(BaseModel):
-    email: str
-
-class RedefinirSenha(BaseModel):
-    token: str
-    nova_senha: str
