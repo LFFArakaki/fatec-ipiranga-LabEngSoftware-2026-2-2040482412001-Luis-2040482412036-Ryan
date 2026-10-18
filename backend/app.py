@@ -7,6 +7,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from fastapi_mail import FastMail, MessageSchema, MessageType, ConnectionConfig
 from jose import jwt
+import bcrypt
 import os
 import dotenv
 import utils
@@ -50,6 +51,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
  
 @app.post("/cadastrar/")
 def cadastrar_usuario(usuario: Usuario, session: SessionDep) -> Usuario:
+    usuario.senha = bcrypt.hashpw(usuario.senha.encode(), bcrypt.gensalt())
     session.add(usuario)
     session.commit()
     session.refresh(usuario)
@@ -64,9 +66,10 @@ def listar_usuarios(
     usuarios = session.exec(select(Usuario).offset(offset).limit(limit)).all()
     return usuarios
  
-@app.get("/listar/usuarios/{cod_usuario}")
-def buscar_usuario(cod_usuario: int, session: SessionDep) -> Usuario:
-    usuario = session.get(Usuario, cod_usuario)
+@app.get("/listar/usuarios/{username}")
+def buscar_usuario(username: str, session: SessionDep) -> Usuario:
+    statement = select(Usuario).where(Usuario.username == username)
+    usuario = session.exec(statement).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="User not found")
     return usuario
@@ -98,7 +101,7 @@ def realizar_login(dados: Usuario, session: SessionDep, response: Response):
     usuario = session.exec(statement).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="User not found")
-    if dados.senha == usuario.senha:
+    if bcrypt.checkpw(dados.senha.encode(), usuario.senha):
         token = jwt.encode({"user_id": usuario.cod}, SECRET_KEY, algorithm=ALGORITHM)
         response.set_cookie(key="access_token", value=token, httponly=True)
         return usuario.cod
@@ -138,7 +141,6 @@ async def send_code(payload: ConectarTG, session: SessionDep):
             if telefone in logins_tg:
                 del logins_tg[telefone]
             raise HTTPException(status_code=400, detail=f"Erro ao enviar código: {str(e)}")
-
 
 @app.post("/auth/tg/sign-in")
 async def sign_in(payload: SessaoTG, session: SessionDep, access_token: Annotated[str | None, Cookie()] = None):
@@ -216,7 +218,7 @@ async def redefinir_senha(dados: RedefinirSenha, session: SessionDep):
         if not usuario:
             raise HTTPException(status_code=404, detail="User not found")
         else:
-            usuario.senha = dados.nova_senha
+            usuario.senha = bcrypt.hashpw(dados.nova_senha.encode(), bcrypt.gensalt())
             session.add(usuario)
             session.commit()
             session.refresh(usuario)
