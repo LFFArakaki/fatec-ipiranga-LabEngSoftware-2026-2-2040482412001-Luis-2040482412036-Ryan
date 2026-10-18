@@ -20,3 +20,12 @@ class EnviarMensagem(BaseModel):
 
 class VisualizarMensagem(BaseModel):
     app: str
+
+class DeletarMensagem(BaseModel):
+    app: str
+    message_id: int
+
+class EditarMensagem(BaseModel):
+    app: str
+    message_id: int
+    nova_mensagem: str

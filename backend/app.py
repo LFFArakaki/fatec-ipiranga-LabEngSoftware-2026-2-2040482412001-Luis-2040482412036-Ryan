@@ -2,7 +2,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, Cookie, Ba
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlmodel import Session, SQLModel, create_engine, select
 from typing import Annotated
-from models_payload import ConectarTG, EnviarMensagem, SessaoTG, EsqueciSenha, RedefinirSenha, VisualizarMensagem
+from models_payload import ConectarTG, DeletarMensagem, EditarMensagem, EnviarMensagem, SessaoTG, EsqueciSenha, RedefinirSenha, VisualizarMensagem
 from models_db import Conversa, Usuario, Conta, UsuarioVisivel
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -57,7 +57,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
  
  
 @app.post("/cadastrar/")
-def cadastrar_usuario(usuario: Usuario, session: SessionDep) -> Usuario:
+def cadastrar_usuario(usuario: Usuario, session: SessionDep) -> UsuarioVisivel:
     usuario.senha = bcrypt.hashpw(usuario.senha.encode(), bcrypt.gensalt())
     session.add(usuario)
     session.commit()
@@ -188,6 +188,7 @@ async def buscar_conversa(chat_id: int, session: SessionDep, token: Annotated[st
             
             messages.append({
                 "remetente": remetente,
+                "id": message.id,
                 "texto": texto,
                 "data": message.date.strftime('%d/%m/%Y %H:%M')
             })
@@ -198,7 +199,7 @@ async def buscar_conversa(chat_id: int, session: SessionDep, token: Annotated[st
 
     return messages
 
-@app.post("/perfil/conversas/{chat_id}")
+@app.post("/perfil/conversas/{chat_id}/enviar-mensagem")
 async def enviar_mensagem(chat_id: int, payload: EnviarMensagem, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
@@ -218,6 +219,48 @@ async def enviar_mensagem(chat_id: int, payload: EnviarMensagem, token: Annotate
         raise HTTPException(status_code=501, detail="Integração com Google Chat ainda não implementada.")
     else:
         raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Google Chat'.")    
+
+@app.post("/perfil/conversas/{chat_id}/deletar-mensagem")
+async def deletar_mensagem(chat_id: int, payload: DeletarMensagem, token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    if payload.app.lower() == "telegram":
+        try:
+            await clients_tg[user_id].delete_messages(chat_id, payload.message_id)
+            return {"status": "success", "message": "Mensagem deletada com sucesso!"}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Erro ao deletar mensagem: {str(e)}")
+    elif payload.app.lower() == "google chat":
+        raise HTTPException(status_code=501, detail="Integração com Google Chat ainda não implementada.")
+    else:
+        raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Google Chat'.")
+
+@app.post("/perfil/conversas/{chat_id}/editar-mensagem")
+async def editar_mensagem(chat_id: int, payload: EditarMensagem, token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    if payload.app.lower() == "telegram":
+        try:
+            await clients_tg[user_id].edit_message(chat_id, payload.message_id, payload.nova_mensagem)
+            return {"status": "success", "message": "Mensagem editada com sucesso!"}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Erro ao editar mensagem: {str(e)}")
+    elif payload.app.lower() == "google chat":
+        raise HTTPException(status_code=501, detail="Integração com Google Chat ainda não implementada.")
+    else:
+        raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Google Chat'.")
 
 @app.post("/auth/tg/codigo")
 async def send_code(payload: ConectarTG, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
