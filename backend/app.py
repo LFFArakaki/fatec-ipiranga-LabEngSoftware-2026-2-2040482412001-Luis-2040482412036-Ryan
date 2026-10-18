@@ -111,7 +111,7 @@ def editar_usuario(cod_usuario: int, session: SessionDep, usuario_novo: Usuario)
     return usuario
 
 @app.post("/login/")
-def realizar_login(dados: Annotated[OAuth2PasswordRequestForm, Depends()], session: SessionDep, response: Response):
+async def realizar_login(dados: Annotated[OAuth2PasswordRequestForm, Depends()], session: SessionDep, response: Response):
     statement = select(Usuario).where(Usuario.email == dados.username)
     usuario = session.exec(statement).first()
     if not usuario:
@@ -119,12 +119,18 @@ def realizar_login(dados: Annotated[OAuth2PasswordRequestForm, Depends()], sessi
     if bcrypt.checkpw(dados.password.encode(), usuario.senha):
         token_data = {"user_id": usuario.cod, "exp": datetime.now(timezone.utc) + timedelta(minutes=60)}
         token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+        statement = select(Conta).where(Conta.cod_usuario == usuario.cod)
+        contas = session.exec(statement).all()
+        for conta in contas:
+            if conta.aplicativo.lower() == "telegram":
+                clients_tg[usuario.cod] = TelegramClient(StringSession(conta.sessao), API_ID, API_HASH)
+                await clients_tg[usuario.cod].connect()
         return {"access_token": token, "token_type": "bearer"}
     else:
         raise HTTPException(status_code=400, detail="Senha errada")
 
 @app.get("/perfil/")
-def obter_perfil(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+async def obter_perfil(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
     try:
@@ -154,7 +160,7 @@ def listar_conversas(session: SessionDep, token: Annotated[str, Depends(oauth2_s
     return conversas
 
 @app.get("/perfil/conversas/{chat_id}")
-async def buscar_conversa(chat_id: int, payload: VisualizarMensagem, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+async def buscar_conversa(chat_id: int, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     messages = []
 
     if not token:
@@ -173,7 +179,7 @@ async def buscar_conversa(chat_id: int, payload: VisualizarMensagem, session: Se
     if not conversa:
         raise HTTPException(status_code=404, detail="Conversa não encontrada")
 
-    if payload.app.lower() == "telegram":
+    if conversa.app.lower() == "telegram":
         if user_id not in clients_tg:
             raise HTTPException(status_code=400, detail="Usuário não conectado ao Telegram.")
         async for message in clients_tg[user_id].iter_messages(chat_id, limit=20):
@@ -185,7 +191,7 @@ async def buscar_conversa(chat_id: int, payload: VisualizarMensagem, session: Se
                 "texto": texto,
                 "data": message.date.strftime('%d/%m/%Y %H:%M')
             })
-    elif payload.app.lower() == "google chat":
+    elif conversa.app.lower() == "google-chat":
         raise HTTPException(status_code=501, detail="Integração com Google Chat ainda não implementada.")
     else:
         raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Google Chat'.")
