@@ -2,7 +2,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response, Cookie, Ba
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlmodel import Session, SQLModel, create_engine, select
 from typing import Annotated
-from models_payload import ConectarTG, SessaoTG, EsqueciSenha, RedefinirSenha
+from models_payload import ConectarTG, EnviarMensagem, SessaoTG, EsqueciSenha, RedefinirSenha, VisualizarMensagem
 from models_db import Conversa, Usuario, Conta, UsuarioVisivel
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -154,7 +154,7 @@ def listar_conversas(session: SessionDep, token: Annotated[str, Depends(oauth2_s
     return conversas
 
 @app.get("/perfil/conversas/{chat_id}")
-async def buscar_conversa(chat_id: int, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+async def buscar_conversa(chat_id: int, payload: VisualizarMensagem, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     messages = []
 
     if not token:
@@ -170,17 +170,48 @@ async def buscar_conversa(chat_id: int, session: SessionDep, token: Annotated[st
     statement = select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == chat_id)
     conversa = session.exec(statement).first()
 
-    async for message in clients_tg[user_id].iter_messages(chat_id, limit=20):
-        remetente = usuario.nome if message.out else conversa.nome_chat
-        texto = message.text if message.text else "[Mensagem sem texto / Mídia]"
-        
-        messages.append({
-            "remetente": remetente,
-            "texto": texto,
-            "data": message.date.strftime('%d/%m/%Y %H:%M')
-        })
+    if not conversa:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada")
+
+    if payload.app.lower() == "telegram":
+        if user_id not in clients_tg:
+            raise HTTPException(status_code=400, detail="Usuário não conectado ao Telegram.")
+        async for message in clients_tg[user_id].iter_messages(chat_id, limit=20):
+            remetente = usuario.nome if message.out else conversa.nome_chat
+            texto = message.text if message.text else "[Mensagem sem texto / Mídia]"
+            
+            messages.append({
+                "remetente": remetente,
+                "texto": texto,
+                "data": message.date.strftime('%d/%m/%Y %H:%M')
+            })
+    elif payload.app.lower() == "google chat":
+        raise HTTPException(status_code=501, detail="Integração com Google Chat ainda não implementada.")
+    else:
+        raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Google Chat'.")
 
     return messages
+
+@app.post("/perfil/conversas/{chat_id}")
+async def enviar_mensagem(chat_id: int, payload: EnviarMensagem, token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    if payload.app.lower() == "telegram":
+        try:
+            await clients_tg[user_id].send_message(chat_id, payload.mensagem)
+            return {"status": "success", "message": "Mensagem enviada com sucesso!"}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Erro ao enviar mensagem: {str(e)}")
+    elif payload.app.lower() == "google chat":
+        raise HTTPException(status_code=501, detail="Integração com Google Chat ainda não implementada.")
+    else:
+        raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Google Chat'.")    
 
 @app.post("/auth/tg/codigo")
 async def send_code(payload: ConectarTG, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):

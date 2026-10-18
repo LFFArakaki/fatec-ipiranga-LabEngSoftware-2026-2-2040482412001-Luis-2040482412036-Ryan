@@ -16,5 +16,7 @@ class RedefinirSenha(BaseModel):
 
 class EnviarMensagem(BaseModel):
     app: str
-    chat_id: str
     mensagem: str
+
+class VisualizarMensagem(BaseModel):
+    app: str
