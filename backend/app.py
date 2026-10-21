@@ -1,3 +1,5 @@
+from xmlrpc import client
+
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, Cookie, BackgroundTasks
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -352,17 +354,17 @@ async def sign_in(payload: SessaoTG, session: SessionDep, token: Annotated[str, 
                 nome = dialog.entity.title
             else:
                 nome = dialog.name
-
-        conversa = Conversa(
-            cod_usuario=user_id,
-            app="Telegram",
-            chat_id=dialog.id,
-            nome_chat=nome
-        )
-
-        session.add(conversa)
-        session.commit()
-        session.refresh(conversa)
+            conversa = Conversa(
+                cod_usuario=user_id,
+                app="Telegram",
+                chat_id=dialog.id,
+                nome_chat=nome
+            )
+            
+            session.add(conversa)
+            session.commit()
+            session.refresh(conversa)
+        
 
         return "Autenticação concluída com sucesso!"
     
