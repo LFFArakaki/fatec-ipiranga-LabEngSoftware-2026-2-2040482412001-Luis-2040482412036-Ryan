@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   Edit2,
   Settings,
@@ -13,57 +13,31 @@ import {
   User,
   Check,
 } from 'lucide-react'
-import { REDES_SOCIAIS, listarRedesConectadas, type RedeSocial } from '../redesSociais'
+import { REDES_SOCIAIS, redesConectadas } from '../redesSociais'
+import type { Sessao } from '../api'
 
 interface PerfilProps {
   onNavigate: (screen: string) => void;
+  sessao: Sessao;
+  onLogout: () => Promise<void>;
 }
 
-interface PerfilData {
-  nome: string;
-  username: string;
-  conversas: string;
-  contatos: string;
-  redes: RedeSocial[];
-}
+export function Perfil({ onNavigate, sessao, onLogout }: PerfilProps) {
+  const [saindo, setSaindo] = useState(false)
+  const { usuario, conversas } = sessao
 
-export function Perfil({ onNavigate }: PerfilProps) {
-  const [perfil, setPerfil] = useState<PerfilData | null>(null)
+  const perfil = {
+    nome: usuario.nome || 'Usuário',
+    username: `@${usuario.nome_usuario.replace(/^@/, '')}`,
+    conversas: String(conversas.length),
+    contatos: String(conversas.filter((conversa) => conversa.chat_id > 0).length),
+    redes: redesConectadas(conversas),
+  }
 
-  useEffect(() => {
-    async function carregarPerfil() {
-      try {
-        const resposta = await fetch('/api/listar/usuarios/', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          }
-        })
-        const usuarios = await resposta.json()
-        
-        if (resposta.ok && Array.isArray(usuarios)) {
-          const emailLogado = localStorage.getItem('userEmail')
-          const usuarioLogado = usuarios.find((u: any) => u.email === emailLogado)
-
-          if (usuarioLogado) {
-            let dbUsername = usuarioLogado.nome_usuario || usuarioLogado.username || usuarioLogado.email?.split('@')[0] || 'usuario'
-            dbUsername = dbUsername.replace(/^@/, '')
-
-            setPerfil({
-              nome: usuarioLogado.nome || 'Usuário',
-              username: `@${dbUsername}`,
-              conversas: '0',
-              contatos: '0',
-              redes: listarRedesConectadas(usuarioLogado.cod)
-            })
-          }
-        }
-      } catch (erro) {
-        console.error('Erro ao carregar dados do perfil:', erro)
-      }
-    }
-
-    carregarPerfil()
-  }, [])
+  const handleSair = async () => {
+    setSaindo(true)
+    await onLogout()
+  }
 
   return (
     <div className="flex h-screen w-full bg-slate-50 overflow-hidden">
@@ -87,26 +61,26 @@ export function Perfil({ onNavigate }: PerfilProps) {
             </div>
           </div>
 
-          <h2 className="text-2xl font-bold text-slate-900">{perfil?.nome || 'Carregando...'}</h2>
-          <p className="text-slate-500 font-medium">{perfil?.username || '@...'}</p>
+          <h2 className="text-2xl font-bold text-slate-900">{perfil.nome}</h2>
+          <p className="text-slate-500 font-medium">{perfil.username}</p>
 
           <div className="flex w-full justify-between mt-8 pt-6 border-t border-slate-100">
             <div className="text-center flex-1">
-              <p className="text-xl font-bold text-slate-900">{perfil?.conversas || '0'}</p>
+              <p className="text-xl font-bold text-slate-900">{perfil.conversas}</p>
               <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">
                 Conversas
               </p>
             </div>
             <div className="w-px bg-slate-200"></div>
             <div className="text-center flex-1">
-              <p className="text-xl font-bold text-slate-900">{perfil?.contatos || '0'}</p>
+              <p className="text-xl font-bold text-slate-900">{perfil.contatos}</p>
               <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">
                 Contatos
               </p>
             </div>
             <div className="w-px bg-slate-200"></div>
             <div className="text-center flex-1">
-              <p className="text-xl font-bold text-slate-900">{perfil?.redes.length ?? 0}</p>
+              <p className="text-xl font-bold text-slate-900">{perfil.redes.length}</p>
               <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">
                 Redes
               </p>
@@ -118,7 +92,7 @@ export function Perfil({ onNavigate }: PerfilProps) {
           <h3 className="text-sm font-semibold text-slate-900 mb-4">
             Redes Sociais Conectadas
           </h3>
-          {perfil && perfil.redes.length > 0 && (
+          {perfil.redes.length > 0 && (
             <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide">
               {perfil.redes.map((rede) => {
                 const { nome, cor, Icone } = REDES_SOCIAIS[rede]
@@ -133,7 +107,7 @@ export function Perfil({ onNavigate }: PerfilProps) {
               })}
             </div>
           )}
-          {perfil && perfil.redes.length === 0 && (
+          {perfil.redes.length === 0 && (
             <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-5 text-center">
               <p className="text-sm text-slate-500">Nenhuma rede social conectada ainda.</p>
               <button
@@ -147,6 +121,16 @@ export function Perfil({ onNavigate }: PerfilProps) {
         </div>
 
         <div className="bg-white border-y border-slate-200 mb-8">
+          <button
+            onClick={() => onNavigate('conversa')}
+            className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-50 transition-colors border-b border-slate-100 cursor-pointer"
+          >
+            <div className="flex items-center gap-3 text-slate-700">
+              <MessageSquare className="w-5 h-5 text-slate-400" />
+              <span className="font-medium">Conversas</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-300" />
+          </button>
           <button className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-50 transition-colors border-b border-slate-100">
             <div className="flex items-center gap-3 text-slate-700">
               <Settings className="w-5 h-5 text-slate-400" />
@@ -175,17 +159,14 @@ export function Perfil({ onNavigate }: PerfilProps) {
             </div>
             <ChevronRight className="w-5 h-5 text-slate-300" />
           </button>
-          <button 
-            onClick={() => {
-              localStorage.removeItem('token')
-              localStorage.removeItem('userEmail')
-              onNavigate('login')
-            }}
-            className="w-full px-6 py-4 flex items-center justify-between hover:bg-red-50 transition-colors cursor-pointer"
+          <button
+            onClick={handleSair}
+            disabled={saindo}
+            className="w-full px-6 py-4 flex items-center justify-between hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
           >
             <div className="flex items-center gap-3 text-red-600">
               <LogOut className="w-5 h-5" />
-              <span className="font-medium">Sair</span>
+              <span className="font-medium">{saindo ? 'Saindo...' : 'Sair'}</span>
             </div>
           </button>
         </div>
@@ -236,26 +217,26 @@ export function Perfil({ onNavigate }: PerfilProps) {
               </div>
             </div>
 
-            <h2 className="text-2xl font-bold text-slate-900">{perfil?.nome || 'Carregando...'}</h2>
-            <p className="text-slate-500 font-medium text-lg">{perfil?.username || '@...'}</p>
+            <h2 className="text-2xl font-bold text-slate-900">{perfil.nome}</h2>
+            <p className="text-slate-500 font-medium text-lg">{perfil.username}</p>
 
             <div className="flex w-full justify-between mt-10 pt-8 border-t border-slate-100">
               <div className="text-center flex-1">
-                <p className="text-2xl font-bold text-slate-900">{perfil?.conversas || '0'}</p>
+                <p className="text-2xl font-bold text-slate-900">{perfil.conversas}</p>
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">
                   Conversas
                 </p>
               </div>
               <div className="w-px bg-slate-200"></div>
               <div className="text-center flex-1">
-                <p className="text-2xl font-bold text-slate-900">{perfil?.contatos || '0'}</p>
+                <p className="text-2xl font-bold text-slate-900">{perfil.contatos}</p>
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">
                   Contatos
                 </p>
               </div>
               <div className="w-px bg-slate-200"></div>
               <div className="text-center flex-1">
-                <p className="text-2xl font-bold text-slate-900">{perfil?.redes.length ?? 0}</p>
+                <p className="text-2xl font-bold text-slate-900">{perfil.redes.length}</p>
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">
                   Redes
                 </p>
@@ -282,7 +263,7 @@ export function Perfil({ onNavigate }: PerfilProps) {
                   Redes Sociais Conectadas
                 </h3>
 
-                {perfil && perfil.redes.length > 0 && (
+                {perfil.redes.length > 0 && (
                   <div className="grid grid-cols-3 gap-6">
                     {perfil.redes.map((rede) => {
                       const { nome, cor, Icone } = REDES_SOCIAIS[rede]
@@ -300,7 +281,7 @@ export function Perfil({ onNavigate }: PerfilProps) {
                     })}
                   </div>
                 )}
-                {perfil && perfil.redes.length === 0 && (
+                {perfil.redes.length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-300 p-6 text-center">
                     <p className="text-sm text-slate-500">Nenhuma rede social conectada ainda.</p>
                     <button
@@ -350,17 +331,14 @@ export function Perfil({ onNavigate }: PerfilProps) {
                     </div>
                     <ChevronRight className="w-5 h-5 text-slate-300" />
                   </button>
-                  <button 
-                    onClick={() => {
-                      localStorage.removeItem('token')
-                      localStorage.removeItem('userEmail')
-                      onNavigate('login')
-                    }}
-                    className="w-full px-6 py-4 flex items-center justify-between hover:bg-red-50 transition-colors cursor-pointer"
+                  <button
+                    onClick={handleSair}
+                    disabled={saindo}
+                    className="w-full px-6 py-4 flex items-center justify-between hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
                   >
                     <div className="flex items-center gap-4 text-red-600">
                       <LogOut className="w-5 h-5" />
-                      <span className="font-medium">Sair</span>
+                      <span className="font-medium">{saindo ? 'Saindo...' : 'Sair'}</span>
                     </div>
                   </button>
                 </div>

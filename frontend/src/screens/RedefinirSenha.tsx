@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowLeft, Check, CheckCircle2, Eye, EyeOff, KeyRound } from 'lucide-react'
-import { REGRAS_SENHA, senhaValida } from '../validarSenha'
-import { extrairMensagemErro, lerResposta } from '../api'
+import { MENSAGEM_SENHA_LONGA, REGRAS_SENHA, senhaDentroDoLimite, senhaValida } from '../validarSenha'
+import { mensagemDeErro, redefinirSenha } from '../api'
 
 interface RedefinirSenhaProps {
   onNavigate: (screen: string) => void;
@@ -16,13 +16,13 @@ export function RedefinirSenha({ onNavigate }: RedefinirSenhaProps) {
   const [mostrarSenha, setMostrarSenha] = useState(false)
   const [loading, setLoading] = useState(false)
   const [erro, setErro] = useState('')
+  const [linkExpirado, setLinkExpirado] = useState(false)
   const [redefinida, setRedefinida] = useState(false)
   const [segundos, setSegundos] = useState(SEGUNDOS_ATE_REDIRECIONAR)
 
   const senhasConferem = senha === confirmarSenha
   const podeConfirmar = senhaValida(senha) && senhasConferem && !loading
 
-  // A tela é aberta pelo link do e-mail (/redefinir-senha?token=...); ao sair, a URL volta para a raiz.
   const navegar = useCallback(
     (tela: string) => {
       window.history.replaceState(null, '', '/')
@@ -43,28 +43,17 @@ export function RedefinirSenha({ onNavigate }: RedefinirSenhaProps) {
 
   const handleConfirmar = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!token || !podeConfirmar) return
     setErro('')
+    setLinkExpirado(false)
     setLoading(true)
 
     try {
-      const resposta = await fetch('/api/auth/redefinir-senha', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, nova_senha: senha }),
-      })
-
-      if (!resposta.ok) {
-        throw new Error(
-          extrairMensagemErro(
-            await lerResposta(resposta),
-            'Não foi possível redefinir a senha. O link pode ter expirado.',
-          ),
-        )
-      }
-
+      await redefinirSenha({ token, nova_senha: senha })
       setRedefinida(true)
     } catch (err) {
-      setErro(err instanceof Error ? err.message : 'Erro de conexão com o servidor.')
+      setErro(mensagemDeErro(err))
+      setLinkExpirado(err instanceof Error && err.message.includes('expirou'))
     } finally {
       setLoading(false)
     }
@@ -198,8 +187,17 @@ export function RedefinirSenha({ onNavigate }: RedefinirSenhaProps) {
               </div>
 
               {erro && (
-                <div className="p-3 text-sm text-red-600 bg-red-50 rounded-xl mb-6">
+                <div role="alert" className="p-3 text-sm text-red-600 bg-red-50 rounded-xl mb-6">
                   {erro}
+                  {linkExpirado && (
+                    <button
+                      type="button"
+                      onClick={() => navegar('esqueci-senha')}
+                      className="block mt-2 font-semibold text-red-700 hover:underline outline-none bg-transparent border-none p-0 cursor-pointer"
+                    >
+                      Solicitar novo link
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -260,6 +258,10 @@ export function RedefinirSenha({ onNavigate }: RedefinirSenhaProps) {
                     )
                   })}
                 </ul>
+
+                {!senhaDentroDoLimite(senha) && (
+                  <p className="text-sm text-red-600">{MENSAGEM_SENHA_LONGA}</p>
+                )}
 
                 <button
                   type="submit"

@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import { ArrowLeft, KeyRound, MailCheck, MessageSquare, ShieldCheck } from 'lucide-react'
-import { extrairMensagemErro, lerResposta } from '../api'
+import { mensagemDeErro, solicitarRedefinicaoSenha } from '../api'
+import { EMAIL_REGEX } from '../validarUsuario'
 
 interface EsqueciSenhaProps {
   onNavigate: (screen: string) => void;
 }
-
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export function EsqueciSenha({ onNavigate }: EsqueciSenhaProps) {
   const [email, setEmail] = useState('')
@@ -18,7 +17,7 @@ export function EsqueciSenha({ onNavigate }: EsqueciSenhaProps) {
     e?.preventDefault()
     setErro('')
 
-    if (!emailRegex.test(email.trim())) {
+    if (!EMAIL_REGEX.test(email.trim())) {
       setErro('Por favor, insira um e-mail válido.')
       return
     }
@@ -26,24 +25,10 @@ export function EsqueciSenha({ onNavigate }: EsqueciSenhaProps) {
     setLoading(true)
 
     try {
-      const resposta = await fetch('/api/auth/esqueci-senha', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim() }),
-      })
-
-      if (!resposta.ok) {
-        throw new Error(
-          extrairMensagemErro(
-            await lerResposta(resposta),
-            'Não foi possível enviar o link. Tente novamente.',
-          ),
-        )
-      }
-
+      await solicitarRedefinicaoSenha({ email: email.trim() })
       setEnviado(true)
     } catch (err) {
-      setErro(err instanceof Error ? err.message : 'Erro de conexão com o servidor.')
+      setErro(mensagemDeErro(err))
     } finally {
       setLoading(false)
     }
@@ -128,12 +113,12 @@ export function EsqueciSenha({ onNavigate }: EsqueciSenhaProps) {
                 Verifique seu e-mail
               </h2>
               <p className="text-slate-500 mt-3">
-                Se existir uma conta associada a{' '}
-                <span className="font-semibold text-slate-900">{email.trim()}</span>,
-                você receberá um link para redefinir sua senha.
+                Enviamos um link para{' '}
+                <span className="font-semibold text-slate-900">{email.trim()}</span>{' '}
+                para você redefinir sua senha.
               </p>
               <p className="text-slate-500 mt-2 mb-8">
-                Abra o link e siga as instruções para criar uma nova senha.
+                O link é válido por 10 minutos. Abra-o e siga as instruções para criar uma nova senha.
               </p>
 
               <button

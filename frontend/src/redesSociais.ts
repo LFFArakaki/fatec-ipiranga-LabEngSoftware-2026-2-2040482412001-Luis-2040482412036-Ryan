@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react'
 import { IconeTelegram } from './components/IconeTelegram'
+import type { Conversa } from './api'
 
 export type RedeSocial = 'telegram'
 
@@ -10,12 +11,25 @@ export const REDES_SOCIAIS: Record<
   telegram: { nome: 'Telegram', cor: 'bg-[#26A5E4]', Icone: IconeTelegram },
 }
 
-type RedesConectadas = Partial<Record<RedeSocial, string>>
+export function redeDoApp(app: string): RedeSocial | null {
+  const nome = app.trim().toLowerCase()
+  return Object.hasOwn(REDES_SOCIAIS, nome) ? (nome as RedeSocial) : null
+}
 
-// O backend ainda não tem rota que liste as contas conectadas, então o vínculo fica salvo no navegador.
-const chave = (codUsuario: number | string) => `redesConectadas:${codUsuario}`
+export function redesConectadas(conversas: Conversa[]): RedeSocial[] {
+  const redes = new Set<RedeSocial>()
+  for (const conversa of conversas) {
+    const rede = redeDoApp(conversa.app)
+    if (rede) redes.add(rede)
+  }
+  return (Object.keys(REDES_SOCIAIS) as RedeSocial[]).filter((rede) => redes.has(rede))
+}
 
-export function lerRedesConectadas(codUsuario: number | string): RedesConectadas {
+type RotulosRedes = Partial<Record<RedeSocial, string>>
+
+const chave = (codUsuario: number) => `redesConectadas:${codUsuario}`
+
+export function lerRedesConectadas(codUsuario: number): RotulosRedes {
   try {
     return JSON.parse(localStorage.getItem(chave(codUsuario)) ?? '{}')
   } catch {
@@ -23,17 +37,12 @@ export function lerRedesConectadas(codUsuario: number | string): RedesConectadas
   }
 }
 
-export function listarRedesConectadas(codUsuario: number | string): RedeSocial[] {
-  const conectadas = lerRedesConectadas(codUsuario)
-  return (Object.keys(REDES_SOCIAIS) as RedeSocial[]).filter((rede) => conectadas[rede])
+export function salvarRedeConectada(codUsuario: number, rede: RedeSocial, conta: string) {
+  const rotulos = lerRedesConectadas(codUsuario)
+  rotulos[rede] = conta
+  localStorage.setItem(chave(codUsuario), JSON.stringify(rotulos))
 }
 
-export function salvarRedeConectada(codUsuario: number | string, rede: RedeSocial, conta: string) {
-  const conectadas = lerRedesConectadas(codUsuario)
-  conectadas[rede] = conta
-  localStorage.setItem(chave(codUsuario), JSON.stringify(conectadas))
-}
-
-export function removerRedesConectadas(codUsuario: number | string) {
+export function removerRedesConectadas(codUsuario: number) {
   localStorage.removeItem(chave(codUsuario))
 }

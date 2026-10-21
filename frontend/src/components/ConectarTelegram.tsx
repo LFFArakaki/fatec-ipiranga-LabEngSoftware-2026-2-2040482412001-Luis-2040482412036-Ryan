@@ -1,7 +1,7 @@
 import { useId, useState } from 'react'
 import { Check } from 'lucide-react'
 import { REDES_SOCIAIS, lerRedesConectadas, salvarRedeConectada } from '../redesSociais'
-import { extrairMensagemErro, lerResposta } from '../api'
+import { confirmarCodigoTelegram, enviarCodigoTelegram, mensagemDeErro } from '../api'
 
 interface Telefone {
   ddi: string;
@@ -10,7 +10,9 @@ interface Telefone {
 }
 
 interface ConectarTelegramProps {
-  codUsuario: number | string | null;
+  codUsuario: number;
+  conectado: boolean;
+  onConectado: () => Promise<void>;
 }
 
 type Etapa = 'inicio' | 'numero' | 'codigo'
@@ -36,6 +38,26 @@ function validarTelefone(telefone: Telefone) {
   if (telefone.ddd.length !== 2) return 'Informe o DDD com 2 dígitos.'
   if (telefone.celular.length !== 9) return 'O número de celular deve ter 9 dígitos.'
   return null
+}
+
+function traduzirErroTelegram(mensagem: string): string {
+  const texto = mensagem.toLowerCase()
+  if (texto.includes('phone number is invalid')) {
+    return 'Número de telefone inválido. Confira o DDI, o DDD e o número.'
+  }
+  if (texto.includes('code entered was invalid')) {
+    return 'Código de confirmação inválido. Confira o código recebido no Telegram.'
+  }
+  if (texto.includes('expired') || texto.includes('nenhuma sessão de login')) {
+    return 'O código expirou ou não foi solicitado para este número. Envie um novo código.'
+  }
+  if (texto.includes('two-steps') || texto.includes('password is required')) {
+    return 'Esta conta do Telegram usa verificação em duas etapas, que ainda não é suportada.'
+  }
+  if (texto.includes('a wait of') || texto.includes('flood')) {
+    return 'Muitas tentativas seguidas. Aguarde alguns minutos e tente novamente.'
+  }
+  return mensagem
 }
 
 function CamposTelefone({
@@ -105,25 +127,28 @@ function CamposTelefone({
   )
 }
 
-export function ConectarTelegram({ codUsuario }: ConectarTelegramProps) {
+export function ConectarTelegram({ codUsuario, conectado, onConectado }: ConectarTelegramProps) {
   const [etapa, setEtapa] = useState<Etapa>('inicio')
   const [telefone, setTelefone] = useState<Telefone>(TELEFONE_VAZIO)
   const [confirmacao, setConfirmacao] = useState<Telefone>(TELEFONE_VAZIO)
   const [codigo, setCodigo] = useState('')
-  const [contaConectadaAgora, setContaConectadaAgora] = useState<string | null>(null)
+  const [conectadoAgora, setConectadoAgora] = useState(false)
   const [loading, setLoading] = useState(false)
   const [erro, setErro] = useState('')
   const idCodigo = useId()
 
   const { nome, cor, Icone } = REDES_SOCIAIS.telegram
-  const contaConectada =
-    contaConectadaAgora ?? (codUsuario != null ? lerRedesConectadas(codUsuario).telegram : undefined)
+  const contaConectada = conectado || conectadoAgora
+  const rotuloConta = lerRedesConectadas(codUsuario).telegram
 
-  const marcarConectado = (numero: Telefone) => {
-    const conta = formatarTelefone(numero)
-    if (codUsuario != null) salvarRedeConectada(codUsuario, 'telegram', conta)
-    setContaConectadaAgora(conta)
+  const marcarConectado = async (numero: Telefone) => {
+    salvarRedeConectada(codUsuario, 'telegram', formatarTelefone(numero))
+    setConectadoAgora(true)
     setEtapa('inicio')
+    try {
+      await onConectado()
+    } catch {
+    }
   }
 
   const cancelar = () => {
@@ -146,30 +171,17 @@ export function ConectarTelegram({ codUsuario }: ConectarTelegramProps) {
     setLoading(true)
 
     try {
-      const resposta = await fetch('/api/auth/tg/codigo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ numero: paraNumeroInternacional(telefone) }),
-      })
-
-      if (!resposta.ok) {
-        const mensagem = extrairMensagemErro(
-          await lerResposta(resposta),
-          'Erro ao enviar o código de confirmação.',
-        )
-        // O backend recusa com 400 quando já existe sessão salva para o número, ou seja, a conta já está conectada.
-        if (mensagem.includes('já cadastrada')) {
-          marcarConectado(telefone)
-          return
-        }
-        throw new Error(mensagem)
-      }
-
+      await enviarCodigoTelegram({ numero: paraNumeroInternacional(telefone) })
       setConfirmacao(TELEFONE_VAZIO)
       setCodigo('')
       setEtapa('codigo')
     } catch (err) {
-      setErro(err instanceof Error ? err.message : 'Erro de conexão com o servidor.')
+      const mensagem = mensagemDeErro(err)
+      if (mensagem.includes('já cadastrada')) {
+        await marcarConectado(telefone)
+      } else {
+        setErro(traduzirErroTelegram(mensagem))
+      }
     } finally {
       setLoading(false)
     }
@@ -195,21 +207,10 @@ export function ConectarTelegram({ codUsuario }: ConectarTelegramProps) {
     setLoading(true)
 
     try {
-      const resposta = await fetch('/api/auth/tg/sign-in', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ numero: paraNumeroInternacional(confirmacao), codigo }),
-      })
-
-      if (!resposta.ok) {
-        throw new Error(
-          extrairMensagemErro(await lerResposta(resposta), 'Não foi possível confirmar a conexão.'),
-        )
-      }
-
-      marcarConectado(confirmacao)
+      await confirmarCodigoTelegram({ numero: paraNumeroInternacional(confirmacao), codigo })
+      await marcarConectado(confirmacao)
     } catch (err) {
-      setErro(err instanceof Error ? err.message : 'Erro de conexão com o servidor.')
+      setErro(traduzirErroTelegram(mensagemDeErro(err)))
     } finally {
       setLoading(false)
     }
@@ -230,7 +231,7 @@ export function ConectarTelegram({ codUsuario }: ConectarTelegramProps) {
           <div className="min-w-0">
             <span className="font-medium text-slate-900 block">{nome}</span>
             <span className="text-xs text-slate-500 block truncate">
-              {contaConectada ?? 'Não conectado'}
+              {contaConectada ? (rotuloConta ?? 'Sessão ativa, conectada automaticamente ao entrar') : 'Não conectado'}
             </span>
           </div>
         </div>
@@ -243,7 +244,6 @@ export function ConectarTelegram({ codUsuario }: ConectarTelegramProps) {
           <button
             type="button"
             onClick={() => setEtapa('numero')}
-            disabled={codUsuario == null}
             className="px-4 py-2 text-sm bg-brand-500 hover:bg-brand-600 text-white font-semibold rounded-xl transition-colors shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
           >
             Conectar
@@ -259,7 +259,7 @@ export function ConectarTelegram({ codUsuario }: ConectarTelegramProps) {
         )}
       </div>
 
-      {contaConectadaAgora && (
+      {conectadoAgora && (
         <div role="status" className="mt-4 p-3 text-sm text-brand-700 bg-brand-50 rounded-xl">
           Telegram conectado com sucesso!
         </div>

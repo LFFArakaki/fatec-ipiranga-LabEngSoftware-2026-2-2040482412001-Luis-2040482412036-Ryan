@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { MessageSquare, Eye, EyeOff } from 'lucide-react'
-import { MENSAGEM_SENHA_INVALIDA, senhaValida } from '../validarSenha'
+import { login, mensagemDeErro } from '../api'
 
 interface LoginProps {
   onNavigate: (screen: string) => void;
+  onLogin: () => Promise<void>;
+  aviso?: string;
 }
 
-export function Login({ onNavigate } : LoginProps) {
+export function Login({ onNavigate, onLogin, aviso }: LoginProps) {
   const [email, setEmail] = useState('')
   const [senha, setSenha] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -17,52 +19,18 @@ export function Login({ onNavigate } : LoginProps) {
     e.preventDefault()
     setErro('')
 
-    // Validação no front para evitar campos vazios
-    if (!email.trim() || !senha.trim()) {
+    if (!email.trim() || !senha) {
       setErro('Preencha o e-mail e a senha.')
-      return
-    }
-
-    if (!senhaValida(senha)) {
-      setErro(MENSAGEM_SENHA_INVALIDA)
       return
     }
 
     setLoading(true)
 
     try {
-      const resposta = await fetch('/api/login/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email,
-          senha,
-        }),
-      })
-
-      const textoResposta = await resposta.text()
-      const dados = textoResposta ? JSON.parse(textoResposta) : {}
-
-      // Se o back-end retornou string de senha errada ou erro HTTP
-      if (!resposta.ok || dados === 'Senha errada' || dados === 'Senha errada') {
-        throw new Error(dados.detail || dados.mensagem || 'E-mail ou senha inválidos.')
-      }
-
-      // Se por acaso o back-end retornar a string "Senha errada" com status 200
-      if (typeof dados === 'string' && dados.toLowerCase().includes('senha')) {
-        throw new Error('Senha incorreta.')
-      }
-
-      // Salva os dados corretos do usuário logado
-      localStorage.setItem('userEmail', email)
-      localStorage.setItem('token', 'token-ficticio-autenticado')
-      onNavigate('perfil')
-
-    } catch (err: any) {
-      setErro(err.message || 'Erro de conexão com o servidor.')
-    } finally {
+      await login(email.trim(), senha)
+      await onLogin()
+    } catch (err) {
+      setErro(mensagemDeErro(err))
       setLoading(false)
     }
   }
@@ -108,8 +76,14 @@ export function Login({ onNavigate } : LoginProps) {
             </p>
           </div>
 
+          {aviso && !erro && (
+            <div role="status" className="p-3 text-sm text-brand-700 bg-brand-50 rounded-xl mb-6">
+              {aviso}
+            </div>
+          )}
+
           {erro && (
-            <div className="p-3 text-sm text-red-600 bg-red-50 rounded-xl mb-6">
+            <div role="alert" className="p-3 text-sm text-red-600 bg-red-50 rounded-xl mb-6">
               {erro}
             </div>
           )}
@@ -121,6 +95,7 @@ export function Login({ onNavigate } : LoginProps) {
               </label>
               <input
                 type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="seu@email.com"
@@ -144,6 +119,7 @@ export function Login({ onNavigate } : LoginProps) {
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
                   value={senha}
                   onChange={(e) => setSenha(e.target.value)}
                   placeholder="••••••••"

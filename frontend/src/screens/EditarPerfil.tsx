@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   ArrowLeft,
   Camera,
   Lock,
   Eye,
-  EyeOff,
   User,
   MessageSquare,
   Users,
@@ -12,11 +11,15 @@ import {
   Settings,
 } from 'lucide-react'
 import { ConectarTelegram } from '../components/ConectarTelegram'
-import { removerRedesConectadas } from '../redesSociais'
-import { extrairMensagemErro } from '../api'
+import { redesConectadas, removerRedesConectadas } from '../redesSociais'
+import { mascararData, validarDadosUsuario } from '../validarUsuario'
+import { atualizarUsuario, excluirConta, logout, mensagemDeErro, type Sessao } from '../api'
 
 interface EditarPerfilProps {
   onNavigate: (screen: string) => void;
+  sessao: Sessao;
+  onSessaoAtualizada: () => Promise<void>;
+  onContaExcluida: () => void;
 }
 
 const REDES_EM_BREVE = [
@@ -25,10 +28,18 @@ const REDES_EM_BREVE = [
   { nome: 'Facebook', sigla: 'FB', cor: 'bg-[#1877F2]' },
 ]
 
-function ListaRedesSociais({ codUsuario }: { codUsuario: number | string | null }) {
+function ListaRedesSociais({
+  codUsuario,
+  telegramConectado,
+  onConectado,
+}: {
+  codUsuario: number;
+  telegramConectado: boolean;
+  onConectado: () => Promise<void>;
+}) {
   return (
     <div className="divide-y divide-slate-100">
-      <ConectarTelegram codUsuario={codUsuario} />
+      <ConectarTelegram codUsuario={codUsuario} conectado={telegramConectado} onConectado={onConectado} />
       {REDES_EM_BREVE.map((rede) => (
         <div key={rede.nome} className="p-4 lg:px-8 lg:py-5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 opacity-60">
@@ -46,93 +57,33 @@ function ListaRedesSociais({ codUsuario }: { codUsuario: number | string | null 
   )
 }
 
-export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
-  const [userId, setUserId] = useState<number | string | null>(null)
-  const [nome, setNome] = useState('')
-  const [username, setUsername] = useState('')
-  const [email, setEmail] = useState('')
-  const [dataNascimento, setDataNascimento] = useState('')
-  const [namePublic, setNamePublic] = useState(true)
+export function EditarPerfil({ onNavigate, sessao, onSessaoAtualizada, onContaExcluida }: EditarPerfilProps) {
+  const { usuario } = sessao
+  const [nome, setNome] = useState(usuario.nome)
+  const [username, setUsername] = useState(usuario.nome_usuario)
+  const [email, setEmail] = useState(usuario.email)
+  const [dataNascimento, setDataNascimento] = useState(usuario.data_nascimento)
   const [loading, setLoading] = useState(false)
   const [loadingExclusao, setLoadingExclusao] = useState(false)
   const [erro, setErro] = useState('')
 
+  const telegramConectado = redesConectadas(sessao.conversas).includes('telegram')
+
   const handleDataChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let valor = e.target.value.replace(/\D/g, '')
-    if (valor.length > 8) valor = valor.slice(0, 8)
-
-    if (valor.length > 4) {
-      valor = `${valor.slice(0, 2)}/${valor.slice(2, 4)}/${valor.slice(4)}`
-    } else if (valor.length > 2) {
-      valor = `${valor.slice(0, 2)}/${valor.slice(2)}`
-    }
-
-    setDataNascimento(valor)
+    setDataNascimento(mascararData(e.target.value))
   }
 
-  useEffect(() => {
-    async function carregarPerfil() {
-      try {
-        const resposta = await fetch('/api/listar/usuarios/', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          }
-        })
-        const usuarios = await resposta.json()
-        
-        if (resposta.ok && Array.isArray(usuarios)) {
-          const emailLogado = localStorage.getItem('userEmail')
-          const dados = usuarios.find((u: any) => u.email === emailLogado)
-
-          if (dados) {
-            const idEncontrado = dados.cod ?? dados.id ?? dados.cod_usuario ?? dados.id_usuario ?? dados.codigo ?? null
-            setUserId(idEncontrado)
-            
-            setNome(dados.nome || '')
-            setUsername(dados.nome_usuario || dados.username || '')
-            setEmail(dados.email || '')
-            setDataNascimento(dados.data_nascimento || '')
-            setNamePublic(dados.namePublic ?? true)
-          } else {
-             setErro('Usuário não encontrado. Faça login novamente.')
-          }
-        }
-      } catch (err) {
-        console.error('Erro ao buscar dados do perfil:', err)
-      }
-    }
-    carregarPerfil()
-  }, [])
-
   const handleSalvar = async () => {
-    if (!userId) {
-      setErro('ID do usuário não encontrado. Faça login novamente.')
-      return
+    const dados = {
+      nome: nome.trim(),
+      nome_usuario: username.trim(),
+      email: email.trim(),
+      data_nascimento: dataNascimento,
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) {
-      setErro('Por favor, insira um e-mail válido.')
-      return
-    }
-
-    if (dataNascimento.length < 10) {
-      setErro('Data de nascimento inválida.')
-      return
-    }
-
-    const [dia, mes, ano] = dataNascimento.split('/')
-    const dataNasc = new Date(Number(ano), Number(mes) - 1, Number(dia))
-    const hoje = new Date()
-    let idade = hoje.getFullYear() - dataNasc.getFullYear()
-    const diffMeses = hoje.getMonth() - dataNasc.getMonth()
-    
-    if (diffMeses < 0 || (diffMeses === 0 && hoje.getDate() < dataNasc.getDate())) {
-      idade--
-    }
-
-    if (idade < 18) {
-      setErro('Você precisa ter pelo menos 18 anos.')
+    const erroDados = validarDadosUsuario(dados)
+    if (erroDados) {
+      setErro(erroDados)
       return
     }
 
@@ -140,33 +91,11 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
     setErro('')
 
     try {
-      const resposta = await fetch(`/api/atualizar/usuarios/${userId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({
-          nome, 
-          nome_usuario: username,
-          email, 
-          data_nascimento: dataNascimento,
-          namePublic,
-        })
-      })
-
-      const textoResposta = await resposta.text()
-      const dados = textoResposta ? JSON.parse(textoResposta) : {}
-
-      if (!resposta.ok) {
-        throw new Error(extrairMensagemErro(dados, 'Erro ao salvar alterações.'))
-      }
-
-      localStorage.setItem('userEmail', email)
+      await atualizarUsuario(usuario.cod, dados)
+      await onSessaoAtualizada()
       onNavigate('perfil')
-    } catch (err: any) {
-      setErro(err.message)
-    } finally {
+    } catch (err) {
+      setErro(mensagemDeErro(err))
       setLoading(false)
     }
   }
@@ -175,34 +104,16 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
     const confirmar = window.confirm('Tem certeza de que deseja excluir sua conta permanentemente?')
     if (!confirmar) return
 
-    if (!userId) return
-
     setLoadingExclusao(true)
     setErro('')
 
     try {
-      const resposta = await fetch(`/api/excluir/usuarios/${userId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      })
-
-      const textoResposta = await resposta.text()
-      let dados: any = {}
-      try { dados = textoResposta ? JSON.parse(textoResposta) : {} } catch { dados = textoResposta }
-
-      if (!resposta.ok) {
-        throw new Error(extrairMensagemErro(dados, 'Erro ao excluir conta.'))
-      }
-
-      removerRedesConectadas(userId)
-      localStorage.removeItem('token')
-      localStorage.removeItem('userEmail')
-      onNavigate('login')
-    } catch (err: any) {
-      setErro(err.message)
-    } finally {
+      await excluirConta()
+      await logout()
+      removerRedesConectadas(usuario.cod)
+      onContaExcluida()
+    } catch (err) {
+      setErro(mensagemDeErro(err))
       setLoadingExclusao(false)
     }
   }
@@ -316,26 +227,13 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
                       Nome
                     </span>
                     <span className="text-xs text-slate-500 flex items-center gap-1">
-                      {namePublic ? (
-                        <>
-                          <Eye className="w-3 h-3" /> Público
-                        </>
-                      ) : (
-                        <>
-                          <EyeOff className="w-3 h-3" /> Privado
-                        </>
-                      )}
+                      <Eye className="w-3 h-3" /> Público
                     </span>
                   </div>
                 </div>
-                <button
-                  onClick={() => setNamePublic(!namePublic)}
-                  className={`w-11 h-6 rounded-full relative cursor-pointer transition-colors ${namePublic ? 'bg-brand-500' : 'bg-slate-300'}`}
-                >
-                  <div
-                    className={`w-5 h-5 bg-white rounded-full absolute top-0.5 shadow-sm transition-all ${namePublic ? 'right-0.5' : 'left-0.5'}`}
-                  ></div>
-                </button>
+                <span className="px-2.5 py-1 text-xs font-semibold text-slate-500 bg-slate-100 rounded-full">
+                  Em breve
+                </span>
               </div>
             </div>
           </div>
@@ -345,7 +243,11 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
               Redes Sociais
             </h3>
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <ListaRedesSociais codUsuario={userId} />
+              <ListaRedesSociais
+                codUsuario={usuario.cod}
+                telegramConectado={telegramConectado}
+                onConectado={onSessaoAtualizada}
+              />
             </div>
           </div>
 
@@ -511,7 +413,11 @@ export function EditarPerfil({ onNavigate }: EditarPerfilProps) {
                     Conecte suas contas para centralizar as conversas em um só lugar.
                   </p>
                 </div>
-                <ListaRedesSociais codUsuario={userId} />
+                <ListaRedesSociais
+                  codUsuario={usuario.cod}
+                  telegramConectado={telegramConectado}
+                  onConectado={onSessaoAtualizada}
+                />
               </div>
 
               <div className="bg-white p-8 rounded-2xl border border-red-100 shadow-sm">

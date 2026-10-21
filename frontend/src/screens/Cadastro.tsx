@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { ArrowLeft, CheckCircle2 } from 'lucide-react'
-import { MENSAGEM_SENHA_INVALIDA, senhaValida } from '../validarSenha'
+import { erroSenha } from '../validarSenha'
+import { mascararData, validarDadosUsuario } from '../validarUsuario'
+import { cadastrar, mensagemDeErro } from '../api'
 
 interface CadastroProps {
   onNavigate: (screen: string) => void;
+  onCadastrado: () => void;
 }
 
-export function Cadastro({ onNavigate }: CadastroProps) {
+export function Cadastro({ onNavigate, onCadastrado }: CadastroProps) {
   const [nome, setNome] = useState('')
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
@@ -17,50 +20,31 @@ export function Cadastro({ onNavigate }: CadastroProps) {
   const [loading, setLoading] = useState(false)
   const [erro, setErro] = useState('')
 
-  const handleDataChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let valor = e.target.value.replace(/\D/g, '')
-    if (valor.length > 8) valor = valor.slice(0, 8)
-
-    if (valor.length > 4) {
-      valor = `${valor.slice(0, 2)}/${valor.slice(2, 4)}/${valor.slice(4)}`
-    } else if (valor.length > 2) {
-      valor = `${valor.slice(0, 2)}/${valor.slice(2)}`
-    }
-
-    setDataNascimento(valor)
-  }
-
   const handleCadastro = async (e: React.FormEvent) => {
     e.preventDefault()
     setErro('')
 
-    if (!senhaValida(senha)) {
-      setErro(MENSAGEM_SENHA_INVALIDA)
+    const dadosUsuario = {
+      nome: nome.trim(),
+      nome_usuario: username.trim(),
+      email: email.trim(),
+      data_nascimento: dataNascimento,
+    }
+
+    const erroDados = validarDadosUsuario(dadosUsuario)
+    if (erroDados) {
+      setErro(erroDados)
+      return
+    }
+
+    const erroDaSenha = erroSenha(senha)
+    if (erroDaSenha) {
+      setErro(erroDaSenha)
       return
     }
 
     if (senha !== confirmarSenha) {
       setErro('As senhas não coincidem.')
-      return
-    }
-
-    if (dataNascimento.length < 10) {
-      setErro('Data de nascimento inválida.')
-      return
-    }
-
-    const [dia, mes, ano] = dataNascimento.split('/')
-    const dataNasc = new Date(Number(ano), Number(mes) - 1, Number(dia))
-    const hoje = new Date()
-    let idade = hoje.getFullYear() - dataNasc.getFullYear()
-    const diffMeses = hoje.getMonth() - dataNasc.getMonth()
-    
-    if (diffMeses < 0 || (diffMeses === 0 && hoje.getDate() < dataNasc.getDate())) {
-      idade--
-    }
-
-    if (idade < 18) {
-      setErro('Você precisa ter pelo menos 18 anos para se cadastrar.')
       return
     }
 
@@ -72,39 +56,10 @@ export function Cadastro({ onNavigate }: CadastroProps) {
     setLoading(true)
 
     try {
-      const resposta = await fetch('/api/cadastrar/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          nome,
-          nome_usuario: username,
-          email,
-          data_nascimento: dataNascimento,
-          senha,
-        }),
-      })
-
-      const textoResposta = await resposta.text()
-      let dados: any = {}
-      
-      try {
-        dados = textoResposta ? JSON.parse(textoResposta) : {}
-      } catch {
-        dados = { detail: textoResposta } 
-      }
-
-      if (!resposta.ok) {
-        let msgErro = typeof dados.detail === 'string' ? dados.detail : (dados.mensagem || 'Erro ao realizar o cadastro.')
-        if (Array.isArray(dados.detail)) msgErro = dados.detail[0]?.msg || 'Dados inválidos enviados ao servidor.'
-        throw new Error(msgErro)
-      }
-
-      onNavigate('login')
-    } catch (err: any) {
-      setErro(err.message || 'Erro de comunicação com o servidor.')
-    } finally {
+      await cadastrar({ ...dadosUsuario, senha })
+      onCadastrado()
+    } catch (err) {
+      setErro(mensagemDeErro(err))
       setLoading(false)
     }
   }
@@ -188,7 +143,7 @@ export function Cadastro({ onNavigate }: CadastroProps) {
           </div>
 
           {erro && (
-            <div className="p-3 text-sm text-red-600 bg-red-50 rounded-xl mb-6">
+            <div role="alert" className="p-3 text-sm text-red-600 bg-red-50 rounded-xl mb-6">
               {erro}
             </div>
           )}
@@ -242,8 +197,9 @@ export function Cadastro({ onNavigate }: CadastroProps) {
                 </label>
                 <input
                   type="text"
+                  inputMode="numeric"
                   value={dataNascimento}
-                  onChange={handleDataChange}
+                  onChange={(e) => setDataNascimento(mascararData(e.target.value))}
                   placeholder="DD/MM/AAAA"
                   maxLength={10}
                   className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition-all text-slate-900 placeholder:text-slate-400"
