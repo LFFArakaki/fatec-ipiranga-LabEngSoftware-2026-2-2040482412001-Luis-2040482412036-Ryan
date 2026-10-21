@@ -298,7 +298,6 @@ async def send_code(payload: ConectarTG, session: SessionDep, token: Annotated[s
                 "status": "code_sent",
                 "message": "Código de verificação enviado pelo Telegram. Prossiga para o endpoint de sign-in."
             }
-            
         except Exception as e:
             await clients_tg[user_id].disconnect()
             if telefone in logins_tg:
@@ -365,7 +364,6 @@ async def sign_in(payload: SessaoTG, session: SessionDep, token: Annotated[str, 
             session.commit()
             session.refresh(conversa)
         
-
         return "Autenticação concluída com sucesso!"
     
     except Exception as e:
@@ -387,7 +385,6 @@ async def redefinir_senha(dados: EsqueciSenha, session: SessionDep, background_t
                 body=url,
                 subtype="html"
             )
-            template_name = "mail/password_reset.html"
 
             fm = FastMail(conf)
             background_tasks.add_task(fm.send_message, message)
