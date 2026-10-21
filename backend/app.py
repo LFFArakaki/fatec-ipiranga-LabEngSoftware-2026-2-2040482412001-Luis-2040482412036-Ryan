@@ -378,7 +378,7 @@ async def redefinir_senha(dados: EsqueciSenha, session: SessionDep, background_t
             raise HTTPException(status_code=404, detail="User not found")
         else:
             token = utils.create_reset_password_token(dados.email)
-            url = f"Aqui está o link para redefinir sua senha: http://localhost:5173/redefinir-senha?token={token}"
+            url = f"Aqui está o link para redefinir sua senha: http://localhost:80/redefinir-senha?token={token}"
             message = MessageSchema(
                 subject="Password Reset Instructions",
                 recipients=[dados.email],
