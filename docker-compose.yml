@@ -21,10 +21,13 @@ services:
     ports:
       - "8000:8000"
   signal-api:
+    container_name: "signal-api"
     user: "1000:1000" # change to UID:GID you preferre
     image: bbernhard/signal-cli-rest-api:rootless-latest
     environment:
-      - MODE=normal 
+      - MODE=normal
+    build:
+      context: ./signal-api
     ports:
       - "8080:8080"
     volumes:

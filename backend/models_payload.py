@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-class ConectarTG(BaseModel):
+class ConectarNumero(BaseModel):
     numero: str
 
 class SessaoTG(BaseModel):
