@@ -1,0 +1,3010 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gabriel-vasile/mimetype"
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	log "github.com/sirupsen/logrus"
+
+	"github.com/bbernhard/signal-cli-rest-api/client"
+	ds "github.com/bbernhard/signal-cli-rest-api/datastructs"
+	utils "github.com/bbernhard/signal-cli-rest-api/utils"
+)
+
+const (
+	// Time allowed to write the file to the client.
+	writeWait = 10 * time.Second
+
+	// Time allowed to read the next pong message from the client.
+	pongWait = 60 * time.Second
+
+	// Send pings to client with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
+)
+
+type UpdateContactRequest struct {
+	Recipient           string  `json:"recipient"`
+	Name                *string `json:"name,omitempty"`
+	ExpirationInSeconds *int    `json:"expiration_in_seconds,omitempty"`
+}
+
+type CreateGroupRequest struct {
+	Name           string              `json:"name,omitempty"`
+	Members        []string            `json:"members,omitempty"`
+	Description    string              `json:"description,omitempty"`
+	Permissions    ds.GroupPermissions `json:"permissions,omitempty"`
+	GroupLinkState string              `json:"group_link,omitempty" enums:"disabled,enabled,enabled-with-approval"`
+	ExpirationTime *int                `json:"expiration_time,omitempty"`
+}
+
+type UpdateGroupRequest struct {
+	Base64Avatar   *string              `json:"base64_avatar,omitempty"`
+	Description    *string              `json:"description,omitempty"`
+	Name           *string              `json:"name,omitempty"`
+	ExpirationTime *int                 `json:"expiration_time,omitempty"`
+	GroupLinkState *string              `json:"group_link,omitempty" enums:"disabled,enabled,enabled-with-approval"`
+	Permissions    *ds.GroupPermissions `json:"permissions,omitempty"`
+}
+
+type PinMessageInGroupRequest struct {
+	TargetAuthor string `json:"target_author"`
+	Timestamp    int64  `json:"timestamp"`
+	Duration     *int   `json:"duration,omitempty"`
+}
+
+type UnpinMessageInGroupRequest struct {
+	TargetAuthor string `json:"target_author"`
+	Timestamp    int64  `json:"timestamp"`
+}
+
+type ChangeGroupMembersRequest struct {
+	Members []string `json:"members"`
+}
+
+type ChangeGroupAdminsRequest struct {
+	Admins []string `json:"admins"`
+}
+
+type LoggingConfiguration struct {
+	Level string `json:"Level"`
+}
+
+type Configuration struct {
+	Logging LoggingConfiguration `json:"logging"`
+}
+
+type RegisterNumberRequest struct {
+	UseVoice bool   `json:"use_voice,omitempty"`
+	Captcha  string `json:"captcha,omitempty"`
+}
+
+type UnregisterNumberRequest struct {
+	DeleteAccount   bool `json:"delete_account,omitempty" example:"false"`
+	DeleteLocalData bool `json:"delete_local_data,omitempty" example:"false"`
+}
+
+type VerifyNumberSettings struct {
+	Pin string `json:"pin,omitempty"`
+}
+
+type SendReactionRequest struct {
+	Recipient    string `json:"recipient"`
+	Reaction     string `json:"reaction"`
+	TargetAuthor string `json:"target_author"`
+	Timestamp    int64  `json:"timestamp"`
+}
+
+type RemoveReactionRequest struct {
+	Recipient    string `json:"recipient"`
+	Reaction     string `json:"reaction,omitempty"`
+	TargetAuthor string `json:"target_author"`
+	Timestamp    int64  `json:"timestamp"`
+}
+
+type Receipt struct {
+	Recipient   string `json:"recipient"`
+	ReceiptType string `json:"receipt_type" enums:"read,viewed"`
+	Timestamp   int64  `json:"timestamp"`
+}
+
+type SendMessageV1 struct {
+	Number           string   `json:"number"` // Account identifier (E.164 phone number or ACI UUID)
+	Recipients       []string `json:"recipients"`
+	Message          string   `json:"message"`
+	Base64Attachment string   `json:"base64_attachment,omitempty" example:"'<BASE64 ENCODED DATA>' OR 'data:<MIME-TYPE>;base64,<BASE64 ENCODED DATA>' OR 'data:<MIME-TYPE>;filename=<FILENAME>;base64,<BASE64 ENCODED DATA>'"`
+	IsGroup          bool     `json:"is_group,omitempty"`
+}
+
+type SendMessageV2 struct {
+	Number            string              `json:"number"` // Account identifier (E.164 phone number or ACI UUID)
+	Recipients        []string            `json:"recipients"`
+	Recipient         string              `json:"recipient,omitempty" swaggerignore:"true"` //some REST API consumers (like the Synology NAS) do not support an array as recipients, so we provide this string parameter here as backup. In order to not confuse anyone, the parameter won't be exposed in the Swagger UI (most users are fine with the recipients parameter).
+	Message           string              `json:"message"`
+	Base64Attachments []string            `json:"base64_attachments,omitempty" example:"<BASE64 ENCODED DATA>,data:<MIME-TYPE>;base64<comma><BASE64 ENCODED DATA>,data:<MIME-TYPE>;filename=<FILENAME>;base64<comma><BASE64 ENCODED DATA>"`
+	Sticker           string              `json:"sticker,omitempty"`
+	Mentions          []ds.MessageMention `json:"mentions,omitempty"`
+	QuoteTimestamp    *int64              `json:"quote_timestamp,omitempty"`
+	QuoteAuthor       *string             `json:"quote_author,omitempty"`
+	QuoteMessage      *string             `json:"quote_message,omitempty"`
+	QuoteMentions     []ds.MessageMention `json:"quote_mentions,omitempty"`
+	TextMode          *string             `json:"text_mode,omitempty" enums:"normal,styled"`
+	EditTimestamp     *int64              `json:"edit_timestamp,omitempty"`
+	NotifySelf        *bool               `json:"notify_self,omitempty"`
+	LinkPreview       *ds.LinkPreviewType `json:"link_preview,omitempty"`
+	ViewOnce          *bool               `json:"view_once,omitempty"`
+}
+
+type TypingIndicatorRequest struct {
+	Recipient string `json:"recipient"`
+}
+
+type Error struct {
+	Msg string `json:"error"`
+}
+
+type SendMessageError struct {
+	Msg             string   `json:"error"`
+	ChallengeTokens []string `json:"challenge_tokens,omitempty"`
+	Account         string   `json:"account"`
+}
+
+type CreateGroupResponse struct {
+	Id string `json:"id"`
+}
+
+type UpdateProfileRequest struct {
+	Name         string  `json:"name"`
+	Base64Avatar string  `json:"base64_avatar,omitempty"`
+	About        *string `json:"about,omitempty"`
+}
+
+type TrustIdentityRequest struct {
+	VerifiedSafetyNumber *string `json:"verified_safety_number,omitempty"`
+	TrustAllKnownKeys    *bool   `json:"trust_all_known_keys,omitempty" example:"false"`
+}
+
+type RemoteDeleteResponse struct {
+	Timestamp string `json:"timestamp"`
+}
+
+type TrustModeRequest struct {
+	TrustMode string `json:"trust_mode"`
+}
+
+type TrustModeResponse struct {
+	TrustMode string `json:"trust_mode"`
+}
+
+var connectionUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+type SearchResponse struct {
+	Number     string `json:"number"`
+	Registered bool   `json:"registered"`
+}
+
+type AddDeviceRequest struct {
+	Uri string `json:"uri"`
+}
+
+type RateLimitChallengeRequest struct {
+	ChallengeToken string `json:"challenge_token" example:"<challenge token>"`
+	Captcha        string `json:"captcha" example:"signalcaptcha://{captcha value}"`
+}
+
+type UpdateAccountSettingsRequest struct {
+	DiscoverableByNumber *bool `json:"discoverable_by_number,omitempty"`
+	ShareNumber          *bool `json:"share_number,omitempty"`
+}
+
+type SetUsernameRequest struct {
+	Username string `json:"username" example:"test"`
+}
+
+type AddStickerPackRequest struct {
+	PackId  string `json:"pack_id" example:"9a32eda01a7a28574f2eb48668ae0dc4"`
+	PackKey string `json:"pack_key" example:"19546e18eba0ff69dea78eb591465289d39e16f35e58389ae779d4f9455aff3a"`
+}
+
+type SetPinRequest struct {
+	Pin string `json:"pin"`
+}
+
+type RemoteDeleteRequest struct {
+	Recipient string `json:"recipient"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type DeleteLocalAccountDataRequest struct {
+	IgnoreRegistered bool `json:"ignore_registered,omitempty" example:"false"`
+}
+
+type DeviceLinkUriResponse struct {
+	DeviceLinkUri string `json:"device_link_uri"`
+}
+
+type CreatePollRequest struct {
+	Recipient               string   `json:"recipient" example:"<phone number> OR <username> OR <group id>"`
+	Question                string   `json:"question" example:"What's your favourite fruit?"`
+	Answers                 []string `json:"answers" example:"apple,banana,orange"`
+	AllowMultipleSelections *bool    `json:"allow_multiple_selections,omitempty" example:"true"`
+}
+
+type CreatePollResponse struct {
+	Timestamp string `json:"timestamp" example:"1769271479"`
+}
+
+type VoteRequest struct {
+	Recipient       string  `json:"recipient" example:"<phone number> OR <username> OR <group id>"`
+	PollAuthor      string  `json:"poll_author" example:"<phone number> OR <uuid>"`
+	PollTimestamp   string  `json:"poll_timestamp" example:"1769271479"`
+	SelectedAnswers []int32 `json:"selected_answers" example:"1"`
+}
+
+type ClosePollRequest struct {
+	Recipient     string `json:"recipient" example:"<phone number> OR <username> OR <group id>"`
+	PollTimestamp string `json:"poll_timestamp" example:"1769271479"`
+}
+
+type Api struct {
+	signalClient *client.SignalClient
+	wsMutex      sync.Mutex
+}
+
+func NewApi(signalClient *client.SignalClient) *Api {
+	return &Api{
+		signalClient: signalClient,
+	}
+}
+
+func accountIdentifierFromParam(c *gin.Context) (utils.IdentifierType, string, error) {
+	raw, err := url.PathUnescape(c.Param("number"))
+	if err != nil {
+		return 0, "", errors.New("Couldn't process request - malformed number")
+	}
+	return utils.ParseAccountIdentifier(raw)
+}
+
+// @Summary Lists general information about the API
+// @Tags General
+// @Description Returns the supported API versions and the internal build nr
+// @Produce  json
+// @Success 200 {object} client.About
+// @Router /v1/about [get]
+func (a *Api) About(c *gin.Context) {
+	c.JSON(200, a.signalClient.About())
+}
+
+// @Summary Register a phone number.
+// @Tags Devices
+// @Description Register a phone number with the signal network.
+// @Accept  json
+// @Produce  json
+// @Success 201
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body RegisterNumberRequest false "Additional Settings"
+// @Router /v1/register/{number} [post]
+func (a *Api) RegisterNumber(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	var req RegisterNumberRequest
+
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(c.Request.Body)
+	if buf.String() != "" {
+		err := json.Unmarshal(buf.Bytes(), &req)
+		if err != nil {
+			log.Error("Couldn't register number: ", err.Error())
+			c.JSON(400, Error{Msg: "Couldn't process request - invalid request."})
+			return
+		}
+	} else {
+		req.UseVoice = false
+		req.Captcha = ""
+	}
+
+	if number == "" {
+		c.JSON(400, gin.H{"error": "Please provide a number"})
+		return
+	}
+
+	err = a.signalClient.RegisterNumber(number, req.UseVoice, req.Captcha)
+	if err != nil {
+		switch err.(type) {
+		case *client.InvalidTransportError:
+			c.JSON(400, Error{Msg: "Couldn't use SMS verification to register the specified number. Wait 60 seconds and try again with {\"use_voice\": true}"})
+			return
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+	c.Writer.WriteHeader(201)
+}
+
+// @Summary Unregister a phone number.
+// @Tags Devices
+// @Description Disables push support for this device. **WARNING:** If *delete_account* is set to *true*, the account will be deleted from the Signal Server. This cannot be undone without loss.
+// @Accept  json
+// @Produce  json
+// @Success 204
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body UnregisterNumberRequest false "Additional Settings"
+// @Router /v1/unregister/{number} [post]
+func (a *Api) UnregisterNumber(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	deleteAccount := false
+	deleteLocalData := false
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(c.Request.Body)
+	if buf.String() != "" {
+		var req UnregisterNumberRequest
+		err := json.Unmarshal(buf.Bytes(), &req)
+		if err != nil {
+			log.Error("Couldn't unregister number: ", err.Error())
+			c.JSON(400, Error{Msg: "Couldn't process request - invalid request."})
+			return
+		}
+		deleteAccount = req.DeleteAccount
+		deleteLocalData = req.DeleteLocalData
+	}
+
+	err = a.signalClient.UnregisterNumber(number, deleteAccount, deleteLocalData)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.Writer.WriteHeader(204)
+}
+
+// @Summary Delete local account data
+// @Tags Devices
+// @Description Delete all local data for the specified account. Only use this after unregistering the account or after removing a linked device.
+// @Accept json
+// @Produce json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body DeleteLocalAccountDataRequest false "Cleanup options"
+// @Success 204
+// @Failure 400 {object} Error
+// @Router /v1/devices/{number}/local-data [delete]
+func (a *Api) DeleteLocalAccountData(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	req := DeleteLocalAccountDataRequest{}
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+			return
+		}
+	}
+
+	if err := a.signalClient.DeleteLocalAccountData(number, req.IgnoreRegistered); err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Verify a registered phone number.
+// @Tags Devices
+// @Description Verify a registered phone number with the signal network.
+// @Accept  json
+// @Produce  json
+// @Success 201 {string} string "OK"
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body VerifyNumberSettings false "Additional Settings"
+// @Param token path string true "Verification Code"
+// @Router /v1/register/{number}/verify/{token} [post]
+func (a *Api) VerifyRegisteredNumber(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	token := c.Param("token")
+
+	pin := ""
+	var req VerifyNumberSettings
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(c.Request.Body)
+	if buf.String() != "" {
+		err := json.Unmarshal(buf.Bytes(), &req)
+		if err != nil {
+			log.Error("Couldn't verify number: ", err.Error())
+			c.JSON(400, Error{Msg: "Couldn't process request - invalid request."})
+			return
+		}
+		pin = req.Pin
+	}
+
+	if number == "" {
+		c.JSON(400, gin.H{"error": "Please provide a number"})
+		return
+	}
+
+	if token == "" {
+		c.JSON(400, gin.H{"error": "Please provide a verification code"})
+		return
+	}
+
+	err = a.signalClient.VerifyRegisteredNumber(number, token, pin)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.Writer.WriteHeader(201)
+}
+
+// @Summary Send a signal message.
+// @Tags Messages
+// @Description Send a signal message
+// @Accept  json
+// @Produce  json
+// @Success 201 {string} string "OK"
+// @Failure 400 {object} Error
+// @Param data body SendMessageV1 true "Input Data"
+// @Router /v1/send [post]
+// @Deprecated
+func (a *Api) Send(c *gin.Context) {
+	var req SendMessageV1
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	base64Attachments := []string{}
+	if req.Base64Attachment != "" {
+		base64Attachments = append(base64Attachments, req.Base64Attachment)
+	}
+
+	_, req.Number, err = utils.ParseAccountIdentifier(req.Number)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	resp, err := a.signalClient.SendV1(req.Number, req.Message, req.Recipients, base64Attachments, req.IsGroup)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.JSON(201, resp)
+}
+
+// @Summary Send a signal message.
+// @Tags Messages
+// @Description Send a signal message. Set the text_mode to 'styled' in case you want to add formatting to your text message. Styling Options: \*italic text\*, \*\*bold text\*\*, ~strikethrough text~, ||spoiler||, \`monospace\`. If you want to escape a formatting character, prefix it with two backslashes.
+// @Accept  json
+// @Produce  json
+// @Success 201 {array} ds.SendMessageResponse
+// @Failure 400 {object} SendMessageError
+// @Param data body SendMessageV2 true "Input Data"
+// @Router /v2/send [post]
+func (a *Api) SendV2(c *gin.Context) {
+	var req SendMessageV2
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	//some REST API consumers (like the Synology NAS) do not allow to use an array for the recipients.
+	//so, in order to also support those platforms, a fallback parameter (recipient) is provided.
+	//this parameter is hidden in the swagger ui in order to not confuse users (most of them are fine with the recipients parameter).
+	if req.Recipient != "" {
+		req.Recipients = append(req.Recipients, req.Recipient)
+	}
+
+	if len(req.Recipients) == 0 {
+		c.JSON(400, gin.H{"error": "Couldn't process request - please provide at least one recipient"})
+		return
+	}
+
+	_, req.Number, err = utils.ParseAccountIdentifier(req.Number)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Sticker != "" && !strings.Contains(req.Sticker, ":") {
+		c.JSON(400, gin.H{"error": "Couldn't process request - please provide valid sticker delimiter"})
+		return
+	}
+
+	textMode := req.TextMode
+	if textMode == nil {
+		defaultSignalTextMode := utils.GetEnv("DEFAULT_SIGNAL_TEXT_MODE", "normal")
+		if defaultSignalTextMode == "styled" {
+			styledStr := "styled"
+			textMode = &styledStr
+		}
+	}
+
+	if req.ViewOnce != nil && *req.ViewOnce && (len(req.Base64Attachments) == 0) {
+		c.JSON(400, Error{Msg: "'view_once' can only be set for image attachments!"})
+		return
+	}
+
+	data, err := a.signalClient.SendV2(
+		req.Number, req.Message, req.Recipients, req.Base64Attachments, req.Sticker,
+		req.Mentions, req.QuoteTimestamp, req.QuoteAuthor, req.QuoteMessage, req.QuoteMentions,
+		textMode, req.EditTimestamp, req.NotifySelf, req.LinkPreview, req.ViewOnce)
+	if err != nil {
+		switch err.(type) {
+		case *client.RateLimitErrorType:
+			if rateLimitError, ok := err.(*client.RateLimitErrorType); ok {
+				extendedError := errors.New(err.Error() + ". Use the attached challenge tokens to lift the rate limit restrictions via the '/v1/accounts/{number}/rate-limit-challenge' endpoint.")
+				c.JSON(429, SendMessageError{Msg: extendedError.Error(), ChallengeTokens: rateLimitError.ChallengeTokens, Account: req.Number})
+				return
+			} else {
+				c.JSON(400, Error{Msg: err.Error()})
+				return
+			}
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.JSON(201, data)
+}
+
+func (a *Api) handleSignalReceive(ws *websocket.Conn, number string, stop chan struct{}) {
+	receiveChannel, channelUuid, err := a.signalClient.GetReceiveChannel(number)
+	if err != nil {
+		log.Error("Couldn't get receive channel: ", err.Error())
+		return
+	}
+
+	for {
+		select {
+		case <-stop:
+			a.signalClient.RemoveReceiveChannel(channelUuid)
+			ws.Close()
+			return
+		case msg := <-receiveChannel:
+			var data string = string(msg.Params)
+			var err error = nil
+			if msg.Err.Code != 0 {
+				err = errors.New(msg.Err.Message)
+			}
+
+			if err == nil {
+				if data != "" {
+					type Response struct {
+						Account string `json:"account"`
+					}
+					var response Response
+					err = json.Unmarshal([]byte(data), &response)
+					if err != nil {
+						log.Error("Couldn't parse message ", data, ":", err.Error())
+						continue
+					}
+
+					if response.Account == number {
+						a.wsMutex.Lock()
+						err = ws.WriteMessage(websocket.TextMessage, []byte(data))
+						if err != nil {
+							if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+								log.Error("Couldn't write message: " + err.Error())
+							}
+							a.wsMutex.Unlock()
+							return
+						}
+						a.wsMutex.Unlock()
+					}
+				}
+			} else {
+				errorMsg := Error{Msg: err.Error()}
+				errorMsgBytes, err := json.Marshal(errorMsg)
+				if err != nil {
+					log.Error("Couldn't serialize error message: " + err.Error())
+					return
+				}
+				a.wsMutex.Lock()
+				err = ws.WriteMessage(websocket.TextMessage, errorMsgBytes)
+				if err != nil {
+					log.Error("Couldn't write message: " + err.Error())
+					a.wsMutex.Unlock()
+					return
+				}
+				a.wsMutex.Unlock()
+			}
+		}
+	}
+}
+
+func wsPong(ws *websocket.Conn, stop chan struct{}) {
+	defer func() {
+		close(stop)
+		ws.Close()
+	}()
+
+	ws.SetReadLimit(512)
+	ws.SetPongHandler(func(string) error { log.Debug("Received pong"); return nil })
+	for {
+		_, _, err := ws.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+}
+
+func (a *Api) wsPing(ws *websocket.Conn, stop chan struct{}) {
+	pingTicker := time.NewTicker(pingPeriod)
+	for {
+		select {
+		case <-stop:
+			ws.Close()
+			return
+		case <-pingTicker.C:
+			a.wsMutex.Lock()
+			if err := ws.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+				a.wsMutex.Unlock()
+				return
+			}
+			a.wsMutex.Unlock()
+		}
+	}
+}
+
+func StringToBool(input string) bool {
+	if input == "true" {
+		return true
+	}
+	return false
+}
+
+// @Summary Receive Signal Messages.
+// @Tags Messages
+// @Description Receives Signal Messages from the Signal Network. If you are running the docker container in normal/native mode, this is a GET endpoint. In json-rpc mode this is a websocket endpoint.
+// @Accept  json
+// @Produce  json
+// @Success 200 {object} []string
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param timeout query string false "Receive timeout in seconds (default: 1)"
+// @Param ignore_attachments query string false "Specify whether the attachments of the received message should be ignored" (default: false)"
+// @Param ignore_stories query string false "Specify whether stories should be ignored when receiving messages" (default: false)"
+// @Param ignore_avatars query string false "Specify whether avatar downloads should be ignored when receiving messages" (default: false)"
+// @Param ignore_stickers query string false "Specify whether sticker pack downloads should be ignored when receiving messages" (default: false)"
+// @Param max_messages query string false "Specify the maximum number of messages to receive (default: unlimited)". Not available in json-rpc mode.
+// @Param send_read_receipts query string false "Specify whether read receipts should be sent when receiving messages" (default: false)"
+// @Router /v1/receive/{number} [get]
+func (a *Api) Receive(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if a.signalClient.GetSignalCliMode() == client.JsonRpc {
+		ws, err := connectionUpgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+		defer ws.Close()
+		var stop = make(chan struct{})
+		go a.handleSignalReceive(ws, number, stop)
+		go a.wsPing(ws, stop)
+		wsPong(ws, stop)
+	} else {
+		timeout := c.DefaultQuery("timeout", "1")
+		timeoutInt, err := strconv.ParseInt(timeout, 10, 32)
+		if err != nil {
+			c.JSON(400, Error{Msg: "Couldn't process request - timeout needs to be numeric!"})
+			return
+		}
+
+		maxMessages := c.DefaultQuery("max_messages", "0")
+		maxMessagesInt, err := strconv.ParseInt(maxMessages, 10, 32)
+		if err != nil {
+			c.JSON(400, Error{Msg: "Couldn't process request - max_messages needs to be numeric!"})
+			return
+		}
+
+		ignoreAttachments := c.DefaultQuery("ignore_attachments", "false")
+		if ignoreAttachments != "true" && ignoreAttachments != "false" {
+			c.JSON(400, Error{Msg: "Couldn't process request - ignore_attachments parameter needs to be either 'true' or 'false'"})
+			return
+		}
+
+		ignoreStories := c.DefaultQuery("ignore_stories", "false")
+		if ignoreStories != "true" && ignoreStories != "false" {
+			c.JSON(400, Error{Msg: "Couldn't process request - ignore_stories parameter needs to be either 'true' or 'false'"})
+			return
+		}
+
+		ignoreAvatars := c.DefaultQuery("ignore_avatars", "false")
+		if ignoreAvatars != "true" && ignoreAvatars != "false" {
+			c.JSON(400, Error{Msg: "Couldn't process request - ignore_avatars parameter needs to be either 'true' or 'false'"})
+			return
+		}
+
+		ignoreStickers := c.DefaultQuery("ignore_stickers", "false")
+		if ignoreStickers != "true" && ignoreStickers != "false" {
+			c.JSON(400, Error{Msg: "Couldn't process request - ignore_stickers parameter needs to be either 'true' or 'false'"})
+			return
+		}
+
+		sendReadReceipts := c.DefaultQuery("send_read_receipts", "false")
+		if sendReadReceipts != "true" && sendReadReceipts != "false" {
+			c.JSON(400, Error{Msg: "Couldn't process request - send_read_receipts parameter needs to be either 'true' or 'false'"})
+			return
+		}
+
+		jsonStr, err := a.signalClient.Receive(number, timeoutInt, StringToBool(ignoreAttachments), StringToBool(ignoreStories), StringToBool(ignoreAvatars), StringToBool(ignoreStickers), maxMessagesInt, StringToBool(sendReadReceipts))
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+
+		c.String(200, jsonStr)
+	}
+}
+
+// @Summary Create a new Signal Group.
+// @Tags Groups
+// @Description Create a new Signal Group with the specified members.
+// @Accept  json
+// @Produce  json
+// @Success 201 {object} CreateGroupResponse
+// @Failure 400 {object} Error
+// @Param data body CreateGroupRequest true "Input Data"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/groups/{number} [post]
+func (a *Api) CreateGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	var req CreateGroupRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	editGroupPermission := client.DefaultGroupPermission
+	addMembersPermission := client.DefaultGroupPermission
+	sendMessagesPermission := client.DefaultGroupPermission
+	groupLinkState := client.DefaultGroupLinkState
+
+	if req.Permissions.AddMembers != "" {
+		if !utils.StringInSlice(req.Permissions.AddMembers, []string{"every-member", "only-admins"}) {
+			c.JSON(400, Error{Msg: "Invalid add members permission provided - only 'every-member' and 'only-admins' allowed!"})
+			return
+		}
+		addMembersPermission = addMembersPermission.FromString(req.Permissions.AddMembers)
+	}
+
+	if req.Permissions.EditGroup != "" {
+		if !utils.StringInSlice(req.Permissions.EditGroup, []string{"every-member", "only-admins"}) {
+			c.JSON(400, Error{Msg: "Invalid edit group permissions provided - only 'every-member' and 'only-admins' allowed!"})
+			return
+		}
+		editGroupPermission = editGroupPermission.FromString(req.Permissions.EditGroup)
+	}
+
+	if req.Permissions.SendMessages != "" {
+		if !utils.StringInSlice(req.Permissions.SendMessages, []string{"every-member", "only-admins"}) {
+			c.JSON(400, Error{Msg: "Invalid send messages permissions provided - only 'every-member' and 'only-admins' allowed!"})
+			return
+		}
+
+		sendMessagesPermission = sendMessagesPermission.FromString(req.Permissions.SendMessages)
+	}
+
+	if req.GroupLinkState != "" {
+		if !utils.StringInSlice(req.GroupLinkState, []string{"enabled", "enabled-with-approval", "disabled"}) {
+			c.JSON(400, Error{Msg: "Invalid group link provided - only 'enabled', 'enabled-with-approval' and 'disabled' allowed!"})
+			return
+		}
+		groupLinkState = groupLinkState.FromString(req.GroupLinkState)
+	}
+
+	groupId, err := a.signalClient.CreateGroup(number, req.Name, req.Members, req.Description, editGroupPermission, addMembersPermission,
+		sendMessagesPermission, groupLinkState, req.ExpirationTime)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.JSON(201, CreateGroupResponse{Id: groupId})
+}
+
+// @Summary Add one or more members to an existing Signal Group.
+// @Tags Groups
+// @Description Add one or more members to an existing Signal Group.
+// @Accept json
+// @Produce json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body ChangeGroupMembersRequest true "Members"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/members [post]
+func (a *Api) AddMembersToGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	if groupId == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - group id missing"})
+		return
+	}
+
+	var req ChangeGroupMembersRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	if len(req.Members) == 0 {
+		c.JSON(400, Error{Msg: "Couldn't process request - group members missing"})
+		return
+	}
+
+	err = a.signalClient.AddMembersToGroup(number, groupId, req.Members)
+	if err != nil {
+		switch err.(type) {
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Remove one or more members from an existing Signal Group.
+// @Tags Groups
+// @Description Remove one or more members from an existing Signal Group.
+// @Accept json
+// @Produce json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body ChangeGroupMembersRequest true "Members"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/members [delete]
+func (a *Api) RemoveMembersFromGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	if groupId == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - group id missing"})
+		return
+	}
+
+	var req ChangeGroupMembersRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	err = a.signalClient.RemoveMembersFromGroup(number, groupId, req.Members)
+	if err != nil {
+		switch err.(type) {
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Add one or more admins to an existing Signal Group.
+// @Tags Groups
+// @Description Add one or more admins to an existing Signal Group.
+// @Accept json
+// @Produce json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body ChangeGroupAdminsRequest true "Admins"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/admins [post]
+func (a *Api) AddAdminsToGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	if groupId == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - group id missing"})
+		return
+	}
+
+	var req ChangeGroupAdminsRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	err = a.signalClient.AddAdminsToGroup(number, groupId, req.Admins)
+	if err != nil {
+		switch err.(type) {
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Remove one or more admins from an existing Signal Group.
+// @Tags Groups
+// @Description Remove one or more admins from an existing Signal Group.
+// @Accept json
+// @Produce json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body ChangeGroupAdminsRequest true "Admins"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/admins [delete]
+func (a *Api) RemoveAdminsFromGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	if groupId == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - group id missing"})
+		return
+	}
+
+	var req ChangeGroupAdminsRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	err = a.signalClient.RemoveAdminsFromGroup(number, groupId, req.Admins)
+	if err != nil {
+		switch err.(type) {
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary List all Signal Groups.
+// @Tags Groups
+// @Description List all Signal Groups.
+// @Accept  json
+// @Produce  json
+// @Success 200 {object} []client.GroupEntry
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param expand query bool false "Expand the response to show more details (default: false)"
+// @Router /v1/groups/{number} [get]
+func (a *Api) GetGroups(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	expand := c.DefaultQuery("expand", "false")
+	if expand != "true" && expand != "false" {
+		c.JSON(400, Error{Msg: "Couldn't process request - expand parameter needs to be either 'true' or 'false'"})
+		return
+	}
+
+	var groups any
+	if StringToBool(expand) {
+		groups, err = a.signalClient.GetGroupsExpanded(number)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	} else {
+		groups, err = a.signalClient.GetGroups(number)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+	c.JSON(200, groups)
+}
+
+// @Summary List a Signal Group.
+// @Tags Groups
+// @Description List a specific Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 200 {object} client.GroupEntry
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Param expand query bool false "Expand the response to show more details (default: false)"
+// @Router /v1/groups/{number}/{groupid} [get]
+func (a *Api) GetGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	groupId := c.Param("groupid")
+
+	expand := c.DefaultQuery("expand", "false")
+	if expand != "true" && expand != "false" {
+		c.JSON(400, Error{Msg: "Couldn't process request - expand parameter needs to be either 'true' or 'false'"})
+		return
+	}
+
+	var groupEntry any
+	if StringToBool(expand) {
+		groupEntry, err = a.signalClient.GetGroupExpanded(number, groupId)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	} else {
+		groupEntry, err = a.signalClient.GetGroup(number, groupId)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+
+	if groupEntry != nil {
+		c.JSON(200, groupEntry)
+	} else {
+		c.JSON(404, Error{Msg: "No group with that id found"})
+	}
+}
+
+// @Summary Returns the avatar of a Signal Group.
+// @Tags Groups
+// @Description Returns the avatar of a Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 200 {string} string	"Image"
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/avatar [get]
+func (a *Api) GetGroupAvatar(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	groupId := c.Param("groupid")
+
+	groupAvatar, err := a.signalClient.GetAvatar(number, groupId, client.GroupAvatar)
+	if err != nil {
+		switch err.(type) {
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+
+	mimeType := mimetype.Detect(groupAvatar)
+	c.Data(200, mimeType.String(), groupAvatar)
+}
+
+// @Summary Delete a Signal Group.
+// @Tags Groups
+// @Description Delete the specified Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 200 {string} string "OK"
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group Id"
+// @Router /v1/groups/{number}/{groupid} [delete]
+func (a *Api) DeleteGroup(c *gin.Context) {
+	base64EncodedGroupId := c.Param("groupid")
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if base64EncodedGroupId == "" {
+		c.JSON(400, Error{Msg: "Please specify a group id"})
+		return
+	}
+
+	groupId, err := client.ConvertGroupIdToInternalGroupId(base64EncodedGroupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	err = a.signalClient.DeleteGroup(number, groupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+}
+
+// @Summary Pin a message in a Signal Group.
+// @Tags Groups
+// @Description Pin a message in a Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 201 {string} string "OK"
+// @Failure 400 {object} Error
+// @Param data body PinMessageInGroupRequest true "Pin"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group Id"
+// @Router /v1/groups/{number}/{groupid}/pin-message [post]
+func (a *Api) PinMessageInGroup(c *gin.Context) {
+	base64EncodedGroupId := c.Param("groupid")
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if base64EncodedGroupId == "" {
+		c.JSON(400, Error{Msg: "Please specify a group id"})
+		return
+	}
+
+	groupId, err := client.ConvertGroupIdToInternalGroupId(base64EncodedGroupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	var req PinMessageInGroupRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	duration := -1
+	if req.Duration != nil {
+		duration = *req.Duration
+	}
+
+	err = a.signalClient.PinMessageInGroup(number, groupId, req.TargetAuthor, req.Timestamp, duration)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(201)
+}
+
+// @Summary Unpin a message in a Signal Group.
+// @Tags Groups
+// @Description Unpin a message in a Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 201 {string} string "OK"
+// @Failure 400 {object} Error
+// @Param data body UnpinMessageInGroupRequest true "Unpin"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group Id"
+// @Router /v1/groups/{number}/{groupid}/pin-message [delete]
+func (a *Api) UnpinMessageInGroup(c *gin.Context) {
+	base64EncodedGroupId := c.Param("groupid")
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if base64EncodedGroupId == "" {
+		c.JSON(400, Error{Msg: "Please specify a group id"})
+		return
+	}
+
+	groupId, err := client.ConvertGroupIdToInternalGroupId(base64EncodedGroupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	var req UnpinMessageInGroupRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	if req.TargetAuthor == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - target author missing"})
+		return
+	}
+
+	if req.Timestamp == 0 {
+		c.JSON(400, Error{Msg: "Couldn't process request - timestamp missing"})
+		return
+	}
+
+	err = a.signalClient.UnpinMessageInGroup(number, groupId, req.TargetAuthor, req.Timestamp)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(201)
+}
+
+// @Summary Link device and generate QR code.
+// @Tags Devices
+// @Description Link this service as a secondary device. Numberless accounts use the same QR flow: signal-cli advertises capabilities=nopni in the link URI. The link command does not take an account selector. After linking, call list accounts and use the ACI when number is empty.
+// @Produce  json
+// @Success 200 {string} string	"Image"
+// @Param device_name query string true "Device Name"
+// @Param qrcode_version query int false "QR code version. Omit to use the smallest version that fits the link URI."
+// @Failure 400 {object} Error
+// @Router /v1/qrcodelink [get]
+func (a *Api) GetQrCodeLink(c *gin.Context) {
+	deviceName := c.Query("device_name")
+	qrCodeVersion := c.Query("qrcode_version")
+
+	if deviceName == "" {
+		c.JSON(400, Error{Msg: "Please provide a name for the device"})
+		return
+	}
+
+	qrCodeVersionInt := 0
+	if qrCodeVersion != "" {
+		var err error
+		qrCodeVersionInt, err = strconv.Atoi(qrCodeVersion)
+		if err != nil {
+			c.JSON(400, Error{Msg: "The qrcode_version parameter needs to be an integer!"})
+			return
+		}
+	}
+
+	png, err := a.signalClient.GetQrCodeLink(deviceName, qrCodeVersionInt)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Data(200, "image/png", png)
+}
+
+// @Summary Get raw device link URI
+// @Tags Devices
+// @Description Generate the deviceLinkUri string for linking without scanning a QR code. Numberless accounts use the same URI. signal-cli advertises capabilities=nopni. Do not pass an account selector to link. After linking, use the ACI from list accounts when number is empty.
+// @Produce json
+// @Param device_name query string true "Device Name"
+// @Success 200 {object} DeviceLinkUriResponse
+// @Failure 400 {object} Error
+// @Router /v1/qrcodelink/raw [get]
+func (a *Api) GetQrCodeLinkUri(c *gin.Context) {
+	deviceName := c.Query("device_name")
+	if deviceName == "" {
+		c.JSON(400, Error{Msg: "Please provide a name for the device"})
+		return
+	}
+
+	deviceLinkUri, err := a.signalClient.GetDeviceLinkUri(deviceName)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.JSON(200, DeviceLinkUriResponse{DeviceLinkUri: deviceLinkUri})
+}
+
+// @Summary List all accounts
+// @Tags Accounts
+// @Description Lists all of the accounts linked or registered. number is an empty string when the account has no phone number; use aci as the account identifier on other endpoints in that case.
+// @Produce json
+// @Success 200 {object} []client.Account
+// @Failure 400 {object} Error
+// @Router /v1/accounts [get]
+func (a *Api) GetAccounts(c *gin.Context) {
+	accounts, err := a.signalClient.GetAccounts()
+	if err != nil {
+		c.JSON(500, Error{Msg: "Couldn't get list of accounts: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, accounts)
+}
+
+// @Summary List all attachments.
+// @Tags Attachments
+// @Description List all downloaded attachments
+// @Produce  json
+// @Success 200 {object} []string
+// @Failure 400 {object} Error
+// @Router /v1/attachments [get]
+func (a *Api) GetAttachments(c *gin.Context) {
+	files, err := a.signalClient.GetAttachments()
+	if err != nil {
+		c.JSON(500, Error{Msg: "Couldn't get list of attachments: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, files)
+}
+
+// @Summary Remove attachment.
+// @Tags Attachments
+// @Description Remove the attachment with the given id from filesystem.
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param attachment path string true "Attachment ID"
+// @Router /v1/attachments/{attachment} [delete]
+func (a *Api) RemoveAttachment(c *gin.Context) {
+	attachment := c.Param("attachment")
+
+	err := a.signalClient.RemoveAttachment(attachment)
+	if err != nil {
+		switch err.(type) {
+		case *client.InvalidNameError:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		case *client.InternalError:
+			c.JSON(500, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(500, Error{Msg: err.Error()})
+			return
+		}
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Serve Attachment.
+// @Tags Attachments
+// @Description Serve the attachment with the given id
+// @Produce  json
+// @Success 200 {string} OK
+// @Failure 400 {object} Error
+// @Param attachment path string true "Attachment ID"
+// @Router /v1/attachments/{attachment} [get]
+func (a *Api) ServeAttachment(c *gin.Context) {
+	attachment := c.Param("attachment")
+
+	attachmentBytes, err := a.signalClient.GetAttachment(attachment)
+	if err != nil {
+		switch err.(type) {
+		case *client.InvalidNameError:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		case *client.InternalError:
+			c.JSON(500, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(500, Error{Msg: err.Error()})
+			return
+		}
+	}
+
+	mime, err := mimetype.DetectReader(bytes.NewReader(attachmentBytes))
+	if err != nil {
+		c.JSON(500, Error{Msg: "Couldn't detect MIME type for attachment"})
+		return
+	}
+
+	c.Writer.Header().Set("Content-Type", mime.String())
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(attachmentBytes)))
+	_, err = c.Writer.Write(attachmentBytes)
+	if err != nil {
+		c.JSON(500, Error{Msg: "Couldn't serve attachment - please try again later"})
+		return
+	}
+}
+
+// @Summary Update Profile.
+// @Tags Profiles
+// @Description Set your name and optional an avatar.
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body UpdateProfileRequest true "Profile Data"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/profiles/{number} [put]
+func (a *Api) UpdateProfile(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req UpdateProfileRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	if req.Name == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - profile name missing"})
+		return
+	}
+
+	err = a.signalClient.UpdateProfile(number, req.Name, req.Base64Avatar, req.About)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary API Health Check
+// @Tags General
+// @Description Internally used by the docker container to perform the health check.
+// @Produce  json
+// @Success 204 {string} OK
+// @Router /v1/health [get]
+func (a *Api) Health(c *gin.Context) {
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary List Identities
+// @Tags Identities
+// @Description List all identities for the given number.
+// @Produce  json
+// @Success 200 {object} []client.IdentityEntry
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/identities/{number} [get]
+func (a *Api) ListIdentities(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	identityEntries, err := a.signalClient.ListIdentities(number)
+	if err != nil {
+		c.JSON(500, Error{Msg: err.Error()})
+		return
+	}
+
+	c.JSON(200, identityEntries)
+}
+
+// @Summary Trust Identity
+// @Tags Identities
+// @Description Trust an identity. When 'trust_all_known_keys' is set to' true', all known keys of this user are trusted. **This is only recommended for testing.**
+// @Produce  json
+// @Success 204 {string} OK
+// @Param data body TrustIdentityRequest true "Input Data"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param numberToTrust path string true "Number To Trust"
+// @Router /v1/identities/{number}/trust/{numberToTrust} [put]
+func (a *Api) TrustIdentity(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	numberToTrust := c.Param("numbertotrust")
+	if numberToTrust == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number to trust missing"})
+		return
+	}
+
+	var req TrustIdentityRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	if (req.VerifiedSafetyNumber == nil && req.TrustAllKnownKeys == nil) || (req.VerifiedSafetyNumber == nil && req.TrustAllKnownKeys != nil && !*req.TrustAllKnownKeys) {
+		c.JSON(400, Error{Msg: "Couldn't process request - please either provide a safety number (preferred & more secure) or set 'trust_all_known_keys' to true"})
+		return
+	}
+
+	if req.VerifiedSafetyNumber != nil && req.TrustAllKnownKeys != nil && *req.TrustAllKnownKeys {
+		c.JSON(400, Error{Msg: "Couldn't process request - please either provide a safety number or set 'trust_all_known_keys' to true. But do not set both parameters at once!"})
+		return
+	}
+
+	if req.VerifiedSafetyNumber != nil && *req.VerifiedSafetyNumber == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - please provide a valid safety number"})
+		return
+	}
+
+	err = a.signalClient.TrustIdentity(number, numberToTrust, req.VerifiedSafetyNumber, req.TrustAllKnownKeys)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Set the REST API configuration.
+// @Tags General
+// @Description Set the REST API configuration.
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} string "OK"
+// @Failure 400 {object} Error
+// @Param data body Configuration true "Configuration"
+// @Router /v1/configuration [post]
+func (a *Api) SetConfiguration(c *gin.Context) {
+	var req Configuration
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	if req.Logging.Level != "" {
+		err = utils.SetLogLevel(req.Logging.Level)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary List the REST API configuration.
+// @Tags General
+// @Description List the REST API configuration.
+// @Accept  json
+// @Produce  json
+// @Success 200 {object} Configuration
+// @Failure 400 {object} Error
+// @Router /v1/configuration [get]
+func (a *Api) GetConfiguration(c *gin.Context) {
+	logLevel := ""
+	if log.GetLevel() == log.DebugLevel {
+		logLevel = "debug"
+	} else if log.GetLevel() == log.InfoLevel {
+		logLevel = "info"
+	} else if log.GetLevel() == log.WarnLevel {
+		logLevel = "warn"
+	}
+
+	configuration := Configuration{Logging: LoggingConfiguration{Level: logLevel}}
+	c.JSON(200, configuration)
+}
+
+// @Summary Block a Signal Group.
+// @Tags Groups
+// @Description Block the specified Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/block [post]
+func (a *Api) BlockGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	internalGroupId, err := client.ConvertGroupIdToInternalGroupId(groupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	err = a.signalClient.BlockGroup(number, internalGroupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Join a Signal Group.
+// @Tags Groups
+// @Description Join the specified Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/join [post]
+func (a *Api) JoinGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	internalGroupId, err := client.ConvertGroupIdToInternalGroupId(groupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	err = a.signalClient.JoinGroup(number, internalGroupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Quit a Signal Group.
+// @Tags Groups
+// @Description Quit the specified Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Router /v1/groups/{number}/{groupid}/quit [post]
+func (a *Api) QuitGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	internalGroupId, err := client.ConvertGroupIdToInternalGroupId(groupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	err = a.signalClient.QuitGroup(number, internalGroupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Update the state of a Signal Group.
+// @Tags Groups
+// @Description Update the state of a Signal Group.
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param groupid path string true "Group ID"
+// @Param data body UpdateGroupRequest true "Input Data"
+// @Router /v1/groups/{number}/{groupid} [put]
+func (a *Api) UpdateGroup(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	groupId := c.Param("groupid")
+	internalGroupId, err := client.ConvertGroupIdToInternalGroupId(groupId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	var req UpdateGroupRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	var groupLinkState *client.GroupLinkState = nil
+	if req.GroupLinkState != nil {
+		if !utils.StringInSlice(*req.GroupLinkState, []string{"enabled", "enabled-with-approval", "disabled"}) {
+			c.JSON(400, Error{Msg: "Invalid group link provided - only 'enabled', 'enabled-with-approval' and 'disabled' allowed!"})
+			return
+		}
+		var gLinkState client.GroupLinkState
+		gLinkStateVal := gLinkState.FromString(*req.GroupLinkState)
+		groupLinkState = &gLinkStateVal
+	}
+
+	editGroupPermission := client.DefaultGroupPermission
+	addMembersPermission := client.DefaultGroupPermission
+	sendMessagesPermission := client.DefaultGroupPermission
+
+	if req.Permissions != nil {
+		if req.Permissions.AddMembers != "" {
+			if !utils.StringInSlice(req.Permissions.AddMembers, []string{"every-member", "only-admins"}) {
+				c.JSON(400, Error{Msg: "Invalid add members permission provided - only 'every-member' and 'only-admins' allowed!"})
+				return
+			}
+			addMembersPermission = addMembersPermission.FromString(req.Permissions.AddMembers)
+		}
+
+		if req.Permissions.EditGroup != "" {
+			if !utils.StringInSlice(req.Permissions.EditGroup, []string{"every-member", "only-admins"}) {
+				c.JSON(400, Error{Msg: "Invalid edit group permissions provided - only 'every-member' and 'only-admins' allowed!"})
+				return
+			}
+			editGroupPermission = editGroupPermission.FromString(req.Permissions.EditGroup)
+		}
+
+		if req.Permissions.SendMessages != "" {
+			if !utils.StringInSlice(req.Permissions.SendMessages, []string{"every-member", "only-admins"}) {
+				c.JSON(400, Error{Msg: "Invalid send messages permissions provided - only 'every-member' and 'only-admins' allowed!"})
+				return
+			}
+
+			sendMessagesPermission = sendMessagesPermission.FromString(req.Permissions.SendMessages)
+		}
+	}
+
+	err = a.signalClient.UpdateGroup(number, internalGroupId, req.Base64Avatar, req.Description, req.Name, req.ExpirationTime, groupLinkState,
+		editGroupPermission, addMembersPermission, sendMessagesPermission)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Send a reaction.
+// @Tags Reactions
+// @Description React to a message
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body SendReactionRequest true "Reaction"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/reactions/{number} [post]
+func (a *Api) SendReaction(c *gin.Context) {
+	var req SendReactionRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if req.Recipient == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - recipient missing"})
+		return
+	}
+
+	if req.Reaction == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - reaction missing"})
+		return
+	}
+
+	if req.TargetAuthor == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - target_author missing"})
+		return
+	}
+
+	if req.Timestamp == 0 {
+		c.JSON(400, Error{Msg: "Couldn't process request - timestamp missing"})
+		return
+	}
+
+	err = a.signalClient.SendReaction(number, req.Recipient, req.Reaction, req.TargetAuthor, req.Timestamp, false)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Remove a reaction.
+// @Tags Reactions
+// @Description Remove a reaction
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body RemoveReactionRequest true "Reaction"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/reactions/{number} [delete]
+func (a *Api) RemoveReaction(c *gin.Context) {
+	var req RemoveReactionRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if req.Recipient == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - recipient missing"})
+		return
+	}
+
+	if req.TargetAuthor == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - target_author missing"})
+		return
+	}
+
+	if req.Timestamp == 0 {
+		c.JSON(400, Error{Msg: "Couldn't process request - timestamp missing"})
+		return
+	}
+
+	err = a.signalClient.SendReaction(number, req.Recipient, req.Reaction, req.TargetAuthor, req.Timestamp, true)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Send a receipt.
+// @Tags Receipts
+// @Description Send a read or viewed receipt
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param data body Receipt true "Receipt"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/receipts/{number} [post]
+func (a *Api) SendReceipt(c *gin.Context) {
+	var req Receipt
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	if req.Recipient == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - recipient missing"})
+		return
+	}
+
+	// if req.ReceiptType != "viewed" && req.ReceiptType != "read" {
+	if !utils.StringInSlice(req.ReceiptType, []string{"read", "viewed"}) {
+		c.JSON(400, Error{Msg: "Couldn't process request - receipt type must be read or viewed"})
+		return
+	}
+
+	if req.Timestamp == 0 {
+		c.JSON(400, Error{Msg: "Couldn't process request - timestamp missing"})
+		return
+	}
+
+	err = a.signalClient.SendReceipt(number, req.Recipient, req.ReceiptType, req.Timestamp)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Show Typing Indicator.
+// @Tags Messages
+// @Description Show Typing Indicator.
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body TypingIndicatorRequest true "Type"
+// @Router /v1/typing-indicator/{number} [put]
+func (a *Api) SendStartTyping(c *gin.Context) {
+	var req TypingIndicatorRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	err = a.signalClient.SendStartTyping(number, req.Recipient)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Hide Typing Indicator.
+// @Tags Messages
+// @Description Hide Typing Indicator.
+// @Accept  json
+// @Produce  json
+// @Success 204 {string} OK
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body TypingIndicatorRequest true "Type"
+// @Router /v1/typing-indicator/{number} [delete]
+func (a *Api) SendStopTyping(c *gin.Context) {
+	var req TypingIndicatorRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		log.Error(err.Error())
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	err = a.signalClient.SendStopTyping(number, req.Recipient)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Check if one or more phone numbers are registered with the Signal Service.
+// @Tags Search
+// @Description Check if one or more phone numbers are registered with the Signal Service.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param numbers query []string true "Numbers to check" collectionFormat(multi)
+// @Success 200 {object} []SearchResponse
+// @Failure 400 {object} Error
+// @Router /v1/search/{number} [get]
+func (a *Api) SearchForNumbers(c *gin.Context) {
+	query := c.Request.URL.Query()
+	if _, ok := query["numbers"]; !ok {
+		c.JSON(400, Error{Msg: "Please provide numbers to query for"})
+		return
+	}
+
+	rawNumber, err := url.PathUnescape(c.Param("number"))
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - malformed number"})
+		return
+	}
+	number := ""
+	if rawNumber != "" {
+		_, number, err = utils.ParseAccountIdentifier(rawNumber)
+		if err != nil {
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+
+	searchResults, err := a.signalClient.SearchForNumbers(number, query["numbers"])
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	searchResponse := []SearchResponse{}
+	for _, val := range searchResults {
+		entry := SearchResponse{Number: val.Number, Registered: val.Registered}
+		searchResponse = append(searchResponse, entry)
+	}
+
+	c.JSON(200, searchResponse)
+}
+
+// @Summary Updates the info associated to a number on the contact list. If the contact doesn’t exist yet, it will be added.
+// @Tags Contacts
+// @Description Updates the info associated to a number on the contact list.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 204
+// @Param data body UpdateContactRequest true "Contact"
+// @Failure 400 {object} Error
+// @Router /v1/contacts/{number} [put]
+func (a *Api) UpdateContact(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req UpdateContactRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	if req.Recipient == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - recipient missing"})
+		return
+	}
+
+	err = a.signalClient.UpdateContact(number, req.Recipient, req.Name, req.ExpirationInSeconds)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Links another device to this device.
+// @Tags Devices
+// @Description Links another device to this device. Only works, if this is the master device.
+// @Accept json
+// @Produce json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 204
+// @Param data body AddDeviceRequest true "Request"
+// @Failure 400 {object} Error
+// @Router /v1/devices/{number} [post]
+func (a *Api) AddDevice(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req AddDeviceRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	err = a.signalClient.AddDevice(number, req.Uri)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary List linked devices.
+// @Tags Devices
+// @Description List linked devices associated to this device.
+// @Accept json
+// @Produce json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 200 {object} []client.ListDevicesResponse
+// @Failure 400 {object} Error
+// @Router /v1/devices/{number} [get]
+func (a *Api) ListDevices(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	devices, err := a.signalClient.ListDevices(number)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.JSON(200, devices)
+}
+
+// @Summary Remove linked device
+// @Tags Devices
+// @Description Remove a linked device from the primary account.
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param deviceId path int true "Device ID from listDevices"
+// @Success 204
+// @Failure 400 {object} Error
+// @Router /v1/devices/{number}/{deviceId} [delete]
+func (a *Api) RemoveDevice(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	deviceIdStr := c.Param("deviceId")
+	deviceId, err := strconv.ParseInt(deviceIdStr, 10, 64)
+	if err != nil {
+		c.JSON(400, Error{Msg: "deviceId must be numeric"})
+		return
+	}
+
+	err = a.signalClient.RemoveDevice(number, deviceId)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Set account specific settings.
+// @Tags General
+// @Description Set account specific settings.
+// @Accept json
+// @Produce json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 204
+// @Param data body TrustModeRequest true "Request"
+// @Failure 400 {object} Error
+// @Router /v1/configuration/{number}/settings [post]
+func (a *Api) SetTrustMode(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req TrustModeRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	trustMode, err := utils.StringToTrustMode(req.TrustMode)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Invalid trust mode"})
+		return
+	}
+
+	err = a.signalClient.SetTrustMode(number, trustMode)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't set trust mode"})
+		log.Error("Couldn't set trust mode: ", err.Error())
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary List account specific settings.
+// @Tags General
+// @Description List account specific settings.
+// @Accept json
+// @Produce json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 200
+// @Param data body TrustModeResponse true "Request"
+// @Failure 400 {object} Error
+// @Router /v1/configuration/{number}/settings [get]
+func (a *Api) GetTrustMode(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	trustMode := TrustModeResponse{}
+	trustMode.TrustMode, err = utils.TrustModeToString(a.signalClient.GetTrustMode(number))
+	if err != nil {
+		c.JSON(400, Error{Msg: "Invalid trust mode"})
+		log.Error("Invalid trust mode: ", err.Error())
+		return
+	}
+
+	c.JSON(200, trustMode)
+}
+
+// @Summary Send a synchronization message with the local contacts list to all linked devices.
+// @Tags Contacts
+// @Description Send a synchronization message with the local contacts list to all linked devices. This command should only be used if this is the primary device.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 204
+// @Failure 400 {object} Error
+// @Router /v1/contacts/{number}/sync [post]
+func (a *Api) SendContacts(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	err = a.signalClient.SendContacts(number)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Lift rate limit restrictions by solving a captcha.
+// @Tags Accounts
+// @Description When running into rate limits, sometimes the limit can be lifted, by solving a CAPTCHA. To get the captcha token, go to https://signalcaptchas.org/challenge/generate.html For the staging environment, use: https://signalcaptchas.org/staging/registration/generate.html. The "challenge_token" is the token from the failed send attempt. The "captcha" is the captcha result, starting with signalcaptcha://
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body RateLimitChallengeRequest true "Request"
+// @Success 204
+// @Failure 400 {object} Error
+// @Router /v1/accounts/{number}/rate-limit-challenge [post]
+func (a *Api) SubmitRateLimitChallenge(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req RateLimitChallengeRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	if req.ChallengeToken == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - challenge token missing"})
+		return
+	}
+
+	if req.Captcha == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - captcha missing"})
+		return
+	}
+
+	err = a.signalClient.SubmitRateLimitChallenge(number, req.ChallengeToken, req.Captcha)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary Update the account settings.
+// @Tags Accounts
+// @Description Update the account attributes on the signal server.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body UpdateAccountSettingsRequest true "Request"
+// @Success 201
+// @Failure 400 {object} Error
+// @Router /v1/accounts/{number}/settings [put]
+func (a *Api) UpdateAccountSettings(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req UpdateAccountSettingsRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	err = a.signalClient.UpdateAccountSettings(number, req.DiscoverableByNumber, req.ShareNumber)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(201)
+}
+
+// @Summary Set a username.
+// @Tags Accounts
+// @Description Allows to set the username that should be used for this account. This can either be just the nickname (e.g. test) or the complete username with discriminator (e.g. test.123). Returns the new username with discriminator and the username link.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body SetUsernameRequest true "Request"
+// @Success 201 {object} client.SetUsernameResponse
+// @Success 204
+// @Failure 400 {object} Error
+// @Router /v1/accounts/{number}/username [post]
+func (a *Api) SetUsername(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req SetUsernameRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	resp, err := a.signalClient.SetUsername(number, req.Username)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.JSON(201, resp)
+}
+
+// @Summary Remove a username.
+// @Tags Accounts
+// @Description Delete the username associated with this account.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 204
+// @Failure 400 {object} Error
+// @Router /v1/accounts/{number}/username [delete]
+func (a *Api) RemoveUsername(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	err = a.signalClient.RemoveUsername(number)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// @Summary List Installed Sticker Packs.
+// @Tags Sticker Packs
+// @Description List Installed Sticker Packs.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 204
+// @Failure 400 {object} Error
+// @Success 200 {object} []client.ListInstalledStickerPacksResponse
+// @Router /v1/sticker-packs/{number} [get]
+func (a *Api) ListInstalledStickerPacks(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	installedStickerPacks, err := a.signalClient.ListInstalledStickerPacks(number)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.JSON(200, installedStickerPacks)
+}
+
+// @Summary Add Sticker Pack.
+// @Tags Sticker Packs
+// @Description In order to add a sticker pack, browse to https://signalstickers.org/ and select the sticker pack you want to add. Then, press the "Add to Signal" button. If you look at the address bar in your browser you should see an URL in this format: https://signal.art/addstickers/#pack_id=XXX&pack_key=YYY, where XXX is the pack_id and YYY is the pack_key.
+// @Accept  json
+// @Produce  json
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Success 201
+// @Failure 400 {object} Error
+// @Param data body AddStickerPackRequest true "Request"
+// @Router /v1/sticker-packs/{number} [post]
+func (a *Api) AddStickerPack(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req AddStickerPackRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	err = a.signalClient.AddStickerPack(number, req.PackId, req.PackKey)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(201)
+}
+
+// @Summary List Contacts
+// @Tags Contacts
+// @Description List all contacts for the given number.
+// @Produce  json
+// @Success 200 {object} []client.ListContactsResponse
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param all_recipients query string false "Include all known recipients, not only contacts." (default: false)"
+// @Router /v1/contacts/{number} [get]
+func (a *Api) ListContacts(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	allRecipients := c.DefaultQuery("all_recipients", "false")
+	if allRecipients != "true" && allRecipients != "false" {
+		c.JSON(400, Error{Msg: "Couldn't process request - all_recipients parameter needs to be either 'true' or 'false'"})
+		return
+	}
+	contacts, err := a.signalClient.ListContacts(number, StringToBool(allRecipients), "")
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.JSON(200, contacts)
+}
+
+// @Summary List Contact
+// @Tags Contacts
+// @Description List a specific contact.
+// @Produce  json
+// @Success 200 {object} client.ListContactsResponse
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param all_recipients query string false "Include all known recipients, not only contacts." (default: false)"
+// @Router /v1/contacts/{number}/{uuid} [get]
+func (a *Api) ListContact(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	uuid := c.Param("uuid")
+	if uuid == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - uuid missing"})
+		return
+	}
+
+	allRecipients := c.DefaultQuery("all_recipients", "false")
+	if allRecipients != "true" && allRecipients != "false" {
+		c.JSON(400, Error{Msg: "Couldn't process request - all_recipients parameter needs to be either 'true' or 'false'"})
+		return
+	}
+
+	contacts, err := a.signalClient.ListContacts(number, StringToBool(allRecipients), uuid)
+	if err != nil {
+		switch err.(type) {
+		case *client.NotFoundError:
+			c.JSON(404, Error{Msg: err.Error()})
+			return
+		default:
+			c.JSON(400, Error{Msg: err.Error()})
+			return
+		}
+	}
+
+	c.JSON(200, contacts[0])
+}
+
+// @Summary Returns the avatar of a contact
+// @Tags Contacts
+// @Description Returns the avatar of a contact.
+// @Produce  json
+// @Success 200 {string} string	"Image"
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/contacts/{number}/{uuid}/avatar [get]
+func (a *Api) GetProfileAvatar(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	uuid := c.Param("uuid")
+	if uuid == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - uuid missing"})
+		return
+	}
+
+	avatar, err := a.signalClient.GetAvatar(number, uuid, client.ProfileAvatar)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	mimeType := mimetype.Detect(avatar)
+	c.Data(200, mimeType.String(), avatar)
+}
+
+// @Summary Set Pin
+// @Tags Accounts
+// @Description Sets a new Signal Pin
+// @Produce  json
+// @Success 201
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body SetPinRequest true "Request"
+// @Router /v1/accounts/{number}/pin [post]
+func (a *Api) SetPin(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	var req SetPinRequest
+	err = c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	err = a.signalClient.SetPin(number, req.Pin)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(201)
+}
+
+// @Summary Remove Pin
+// @Tags Accounts
+// @Description Removes a Signal Pin
+// @Produce  json
+// @Success 204
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Router /v1/accounts/{number}/pin [delete]
+func (a *Api) RemovePin(c *gin.Context) {
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	err = a.signalClient.RemovePin(number)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(204)
+}
+
+// @Summary Delete a signal message.
+// @Tags Messages
+// @Description Delete a signal message
+// @Accept  json
+// @Produce  json
+// @Success 201 {object} RemoteDeleteResponse
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body RemoteDeleteRequest true "Type"
+// @Router /v1/remote-delete/{number} [delete]
+func (a *Api) RemoteDelete(c *gin.Context) {
+	var req RemoteDeleteRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	timestamp, err := a.signalClient.RemoteDelete(number, req.Recipient, req.Timestamp)
+
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.JSON(201, RemoteDeleteResponse{Timestamp: strconv.FormatInt(timestamp.Timestamp, 10)})
+}
+
+// @Summary Create a new poll.
+// @Tags Polls
+// @Description Create a new poll
+// @Accept  json
+// @Produce  json
+// @Success 201 {object} CreatePollResponse
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body CreatePollRequest true "Type"
+// @Router /v1/polls/{number} [post]
+func (a *Api) CreatePoll(c *gin.Context) {
+	var req CreatePollRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	if req.Recipient == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - recipient missing"})
+		return
+	}
+
+	if req.Question == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - question missing"})
+		return
+	}
+
+	if len(req.Answers) == 0 {
+		c.JSON(400, Error{Msg: "Couldn't process request - answers missing"})
+		return
+	}
+
+	allowMultipleSelections := true
+	if req.AllowMultipleSelections != nil {
+		allowMultipleSelections = *req.AllowMultipleSelections
+	}
+
+	timestamp, err := a.signalClient.CreatePoll(number, req.Recipient, req.Question, req.Answers, allowMultipleSelections)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	c.JSON(201, CreatePollResponse{Timestamp: timestamp})
+}
+
+// @Summary Answer a poll.
+// @Tags Polls
+// @Description Answer a poll
+// @Accept  json
+// @Produce  json
+// @Success 204
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body VoteRequest true "Type"
+// @Router /v1/polls/{number}/vote [post]
+func (a *Api) VoteInPoll(c *gin.Context) {
+	var req VoteRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	if req.PollTimestamp == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - poll_timestamp missing"})
+		return
+	}
+
+	if req.PollAuthor == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - poll_author missing"})
+		return
+	}
+
+	if len(req.SelectedAnswers) == 0 {
+		c.JSON(400, Error{Msg: "Couldn't process request - selected_answers missing"})
+		return
+	}
+
+	if req.Recipient == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - recipient missing"})
+		return
+	}
+
+	pollTimestamp, err := strconv.ParseInt(req.PollTimestamp, 10, 64)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid timestamp"})
+		return
+	}
+
+	for _, index := range req.SelectedAnswers {
+		if index <= 0 {
+			c.JSON(400, Error{Msg: "Invalid index in selected_answers specified, index needs to be >= 1!"})
+			return
+		}
+	}
+
+	err = a.signalClient.VoteInPoll(number, req.Recipient, req.PollAuthor, pollTimestamp, req.SelectedAnswers)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(204)
+}
+
+// @Summary Close a poll.
+// @Tags Polls
+// @Description Close a poll
+// @Accept  json
+// @Produce  json
+// @Success 204
+// @Failure 400 {object} Error
+// @Param number path string true "Account identifier (E.164 phone number or ACI UUID)"
+// @Param data body ClosePollRequest true "Type"
+// @Router /v1/polls/{number} [delete]
+func (a *Api) ClosePoll(c *gin.Context) {
+	var req ClosePollRequest
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid request"})
+		return
+	}
+
+	_, number, err := accountIdentifierFromParam(c)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+	if number == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - number missing"})
+		return
+	}
+
+	if req.PollTimestamp == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - poll_timestamp missing"})
+		return
+	}
+
+	if req.Recipient == "" {
+		c.JSON(400, Error{Msg: "Couldn't process request - recipient missing"})
+		return
+	}
+
+	pollTimestamp, err := strconv.ParseInt(req.PollTimestamp, 10, 64)
+	if err != nil {
+		c.JSON(400, Error{Msg: "Couldn't process request - invalid timestamp"})
+		return
+	}
+
+	err = a.signalClient.ClosePoll(number, req.Recipient, pollTimestamp)
+	if err != nil {
+		c.JSON(400, Error{Msg: err.Error()})
+		return
+	}
+
+	c.Status(204)
+}
