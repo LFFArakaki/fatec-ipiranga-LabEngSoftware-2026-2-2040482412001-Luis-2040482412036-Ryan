@@ -131,6 +131,8 @@ async def realizar_login(dados: Annotated[OAuth2PasswordRequestForm, Depends()],
             if conta.aplicativo.lower() == "telegram":
                 clients_tg[usuario.cod] = TelegramClient(StringSession(conta.sessao), API_ID, API_HASH)
                 await clients_tg[usuario.cod].connect()
+            if conta.aplicativo.lower() == "signal":
+                clients_signal[usuario.cod] = SignalCliRestApi(SIGNAL_SERVER, conta.usuario_app)
         return {"access_token": token, "token_type": "bearer"}
     else:
         raise HTTPException(status_code=400, detail="Senha errada")
@@ -570,10 +572,10 @@ async def sign_in_tg(payload: SessaoTG, session: SessionDep, token: Annotated[st
                 chat_id=dialog.id,
                 nome_chat=nome
             )
-            
-            session.add(conversa)
-            session.commit()
-            session.refresh(conversa)
+            if not session.exec(select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == dialog.id)).first():
+                session.add(conversa)
+                session.commit()
+                session.refresh(conversa)
         
         return "Autenticação concluída com sucesso!"
     
