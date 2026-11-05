@@ -268,6 +268,20 @@ def listar_conversas(session: SessionDep, token: Annotated[str, Depends(oauth2_s
     conversas = session.exec(statement).all()
     return conversas
 
+@app.get("/perfil/conversas/{app}")
+async def listar_conversas_por_app(app: str, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    try:
+        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = decode_token.get("user_id")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    statement = select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.app == app)
+    conversas = session.exec(statement).all()
+    return conversas
+
 @app.get("/perfil/conversas/{chat_id}")
 async def buscar_conversa(chat_id: str, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     messages = []
