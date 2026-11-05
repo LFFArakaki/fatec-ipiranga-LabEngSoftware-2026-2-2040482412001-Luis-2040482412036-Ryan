@@ -25,18 +25,18 @@ API_ID = os.getenv('API_ID')
 API_HASH = os.getenv('API_HASH')
 SECRET_KEY = os.getenv('SECRET_KEY')
 ALGORITHM = os.getenv('ALGORITHM')
-SIGNAL_SERVER = "http://signal-api:8080"
-CONTAINER_NAME = "signal-api"
+SIGNAL_SERVER = os.getenv('SIGNAL_SERVER')
+CONTAINER_NAME = os.getenv('CONTAINER_NAME')
 logins_tg = {}
 clients_tg = {}
 clients_signal = {}
 
 conf = ConnectionConfig(
-    MAIL_SERVER="smtp.gmail.com",
-    MAIL_PORT=587,
-    MAIL_USERNAME=''.join(os.getenv('MAIL_USERNAME')),
-    MAIL_PASSWORD=''.join(os.getenv('MAIL_PASSWORD')),
-    MAIL_FROM=''.join(os.getenv('MAIL_FROM')),
+    MAIL_SERVER= os.getenv('MAIL_SERVER'),
+    MAIL_PORT= int(os.getenv('MAIL_PORT')),
+    MAIL_USERNAME= os.getenv('MAIL_USERNAME'),
+    MAIL_PASSWORD= os.getenv('MAIL_PASSWORD'),
+    MAIL_FROM= os.getenv('MAIL_FROM'),
     MAIL_STARTTLS=True,
     MAIL_SSL_TLS=False,
 )
