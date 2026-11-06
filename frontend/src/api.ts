@@ -308,7 +308,7 @@ export function listarConversas() {
 }
 
 export function buscarMensagens(chatId: number) {
-  return requisitar<MensagemApi[]>(`/perfil/conversas/${chatId}`, {
+  return requisitar<MensagemApi[]>(`/perfil/conversa/${chatId}`, {
     auth: true,
     fallback: 'Não foi possível carregar as mensagens desta conversa.',
   })
