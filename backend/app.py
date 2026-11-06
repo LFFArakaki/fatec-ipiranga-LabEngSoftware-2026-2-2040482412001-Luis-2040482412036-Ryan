@@ -6,7 +6,7 @@ from models_payload import ConectarNumero, DeletarMensagem, EditarMensagem, Envi
 from models_db import Conversa, Usuario, Conta, UsuarioVisivel, ConversaSignal
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.tl.types import Chat, Channel, User
+from telethon.tl.types import Chat, Channel, User, PeerUser
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from jose import jwt
 from datetime import datetime, timezone
@@ -17,7 +17,6 @@ import bcrypt
 import os
 import dotenv
 import utils
-import json
 
 dotenv.load_dotenv()
 
@@ -33,7 +32,7 @@ clients_signal = {}
 
 conf = ConnectionConfig(
     MAIL_SERVER= os.getenv('MAIL_SERVER'),
-    MAIL_PORT= int(os.getenv('MAIL_PORT')),
+    MAIL_PORT= os.getenv('MAIL_PORT'),
     MAIL_USERNAME= os.getenv('MAIL_USERNAME'),
     MAIL_PASSWORD= os.getenv('MAIL_PASSWORD'),
     MAIL_FROM= os.getenv('MAIL_FROM'),
@@ -284,8 +283,8 @@ async def listar_conversas_por_app(app: str, session: SessionDep, token: Annotat
     conversas = session.exec(statement).all()
     return conversas
 
-@app.get("/perfil/conversas/{chat_id}")
-async def buscar_conversa(chat_id: str, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
+@app.get("/perfil/conversa/{chat_id}")
+async def exibir_mensagens(chat_id: str, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     messages = []
 
     if not token:
@@ -305,6 +304,7 @@ async def buscar_conversa(chat_id: str, session: SessionDep, token: Annotated[st
         raise HTTPException(status_code=404, detail="Conversa não encontrada")
 
     if conversa.app.lower() == "telegram":
+        chat_id = int(chat_id)
         if user_id not in clients_tg:
             raise HTTPException(status_code=400, detail="Usuário não conectado ao Telegram.")
         async for message in clients_tg[user_id].iter_messages(chat_id, limit=20):
@@ -317,7 +317,6 @@ async def buscar_conversa(chat_id: str, session: SessionDep, token: Annotated[st
                 "texto": texto,
                 "data": message.date.strftime('%d/%m/%Y %H:%M')
             })
-
     elif conversa.app.lower() == "signal":
         signal_client = clients_signal.get(user_id)
         conversa_signal = session.exec(select(ConversaSignal).where(ConversaSignal.cod_conversa == conversa.cod)).first()
@@ -390,7 +389,6 @@ async def buscar_conversa(chat_id: str, session: SessionDep, token: Annotated[st
         messages = list(conversa_signal.log.items())
     else:
         raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Signal'.")
-
     return messages
 
 @app.post("/perfil/conversas/{chat_id}/enviar-mensagem")
@@ -404,11 +402,13 @@ async def enviar_mensagem(chat_id: str, session: SessionDep, payload: EnviarMens
         raise HTTPException(status_code=401, detail="Token inválido")
 
     if payload.app.lower() == "telegram":
+        chat_id = int(chat_id)
         try:
             await clients_tg[user_id].send_message(chat_id, payload.mensagem)
             return {"status": "success", "message": "Mensagem enviada com sucesso!"}
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Erro ao enviar mensagem: {str(e)}")
+        
     elif payload.app.lower() == "signal":
         signal_client = clients_signal.get(user_id)
         if not signal_client:
@@ -452,6 +452,7 @@ async def deletar_mensagem(chat_id: str, payload: DeletarMensagem, token: Annota
         raise HTTPException(status_code=401, detail="Token inválido")
 
     if payload.app.lower() == "telegram":
+        chat_id = int(chat_id)
         try:
             await clients_tg[user_id].delete_messages(chat_id, payload.message_id)
             return {"status": "success", "message": "Mensagem deletada com sucesso!"}
@@ -471,6 +472,7 @@ async def editar_mensagem(chat_id: str, payload: EditarMensagem, token: Annotate
         raise HTTPException(status_code=401, detail="Token inválido")
 
     if payload.app.lower() == "telegram":
+        chat_id = int(chat_id)
         try:
             await clients_tg[user_id].edit_message(chat_id, payload.message_id, payload.nova_mensagem)
             return {"status": "success", "message": "Mensagem editada com sucesso!"}
