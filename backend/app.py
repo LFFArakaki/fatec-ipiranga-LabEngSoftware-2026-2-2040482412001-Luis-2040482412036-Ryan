@@ -386,7 +386,7 @@ async def exibir_mensagens(chat_id: str, session: SessionDep, token: Annotated[s
                             session.refresh(conversa_signal)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Erro ao listar mensagens do Signal: {str(e)}")
-        messages = list(conversa_signal.log.items())
+        messages = list(conversa_signal.log.values())
     else:
         raise HTTPException(status_code=400, detail="Aplicativo não suportado. Use 'Telegram' ou 'Signal'.")
     return messages
@@ -430,7 +430,6 @@ async def enviar_mensagem(chat_id: str, session: SessionDep, payload: EnviarMens
                     "data": datetime.now().strftime('%d/%m/%Y %H:%M')
                 }
                 conversa_log[f"mensagem{timestamp}"] = msg
-                print(conversa_log)
                 conversa_signal.log = conversa_log
                 session.add(conversa_signal)
                 session.commit()
