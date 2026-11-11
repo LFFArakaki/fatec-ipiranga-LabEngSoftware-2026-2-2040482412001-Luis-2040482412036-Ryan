@@ -1,9 +1,13 @@
 import { useState } from 'react'
-import { Check, LoaderCircle, Pencil, Trash, X } from 'lucide-react'
+import { Check, LoaderCircle, Pencil, Trash2, X } from 'lucide-react'
 
 export interface MensagemTela {
-  id: number;
+  /** Chave estável para o React: o Signal não informa id de mensagem. */
+  chave: string;
+  /** Id da mensagem no Telegram, usado para editar e excluir. */
+  id: number | null;
   texto: string;
+  remetente: string;
   data: Date | null;
   propria: boolean;
   pendente?: boolean;
@@ -12,6 +16,7 @@ export interface MensagemTela {
 
 interface BolhaMensagemProps {
   mensagem: MensagemTela;
+  mostrarRemetente?: boolean;
   podeEditar: boolean;
   podeExcluir: boolean;
   editando: boolean;
@@ -33,6 +38,7 @@ const classeBotaoAcao =
 
 export function BolhaMensagem({
   mensagem,
+  mostrarRemetente = false,
   podeEditar,
   podeExcluir,
   editando,
@@ -99,7 +105,7 @@ export function BolhaMensagem({
               {excluindo ? (
                 <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <Trash className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5" />
               )}
             </button>
           )}
@@ -148,9 +154,14 @@ export function BolhaMensagem({
             </div>
           </div>
         ) : (
-          <p className={`text-[15px] whitespace-pre-wrap break-words ${compacta ? 'leading-snug' : 'leading-relaxed'}`}>
-            {mensagem.texto}
-          </p>
+          <>
+            {mostrarRemetente && (
+              <p className="text-xs font-semibold text-brand-600 mb-0.5 truncate">{mensagem.remetente}</p>
+            )}
+            <p className={`text-[15px] whitespace-pre-wrap break-words ${compacta ? 'leading-snug' : 'leading-relaxed'}`}>
+              {mensagem.texto}
+            </p>
+          </>
         )}
         <div className={`text-[10px] text-right mt-1 font-medium ${propria ? 'text-brand-100' : 'text-slate-400'}`}>
           {pendente ? 'Enviando...' : `${editada ? 'editada · ' : ''}${formatarHora(mensagem.data)}`}

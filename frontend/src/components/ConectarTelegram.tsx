@@ -1,49 +1,37 @@
 import { useId, useState } from 'react'
 import { Check } from 'lucide-react'
 import { REDES_SOCIAIS, lerRedesConectadas, salvarRedeConectada } from '../redesSociais'
-import { confirmarCodigoTelegram, enviarCodigoTelegram, mensagemDeErro } from '../api'
-
-interface Telefone {
-  ddi: string;
-  ddd: string;
-  celular: string;
-}
+import { confirmarCodigoTelegram, contaTelegramJaVinculada, enviarCodigoTelegram, mensagemDeErro } from '../api'
+import { CamposTelefone } from './CamposTelefone'
+import {
+  TELEFONE_VAZIO,
+  classeCampo,
+  formatarTelefone,
+  paraNumeroInternacional,
+  somenteDigitos,
+  validarTelefone,
+  type Telefone,
+} from '../telefone'
 
 interface ConectarTelegramProps {
   codUsuario: number;
+  /** Já existem conversas do Telegram: o servidor reconecta a sessão salva a cada login. */
   conectado: boolean;
-  onConectado: () => Promise<void>;
+  onConectado: () => Promise<unknown>;
 }
 
 type Etapa = 'inicio' | 'numero' | 'codigo'
-
-const TELEFONE_VAZIO: Telefone = { ddi: '', ddd: '', celular: '' }
-
-const classeInput =
-  'w-full py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition-all text-slate-900 placeholder:text-slate-400'
-
-const somenteDigitos = (valor: string, maximo: number) => valor.replace(/\D/g, '').slice(0, maximo)
-
-const formatarCelular = (celular: string) =>
-  celular.length > 5 ? `${celular.slice(0, 5)}-${celular.slice(5)}` : celular
-
-const formatarTelefone = (telefone: Telefone) =>
-  `+${telefone.ddi} (${telefone.ddd}) ${formatarCelular(telefone.celular)}`
-
-const paraNumeroInternacional = (telefone: Telefone) =>
-  `+${telefone.ddi}${telefone.ddd}${telefone.celular}`
-
-function validarTelefone(telefone: Telefone) {
-  if (!telefone.ddi) return 'Informe o DDI do país (ex.: 55 para o Brasil).'
-  if (telefone.ddd.length !== 2) return 'Informe o DDD com 2 dígitos.'
-  if (telefone.celular.length !== 9) return 'O número de celular deve ter 9 dígitos.'
-  return null
-}
 
 function traduzirErroTelegram(mensagem: string): string {
   const texto = mensagem.toLowerCase()
   if (texto.includes('phone number is invalid')) {
     return 'Número de telefone inválido. Confira o DDI, o DDD e o número.'
+  }
+  if (texto.includes('banned')) {
+    return 'Este número foi bloqueado pelo Telegram.'
+  }
+  if (texto.includes('not yet being used')) {
+    return 'Este número ainda não tem conta no Telegram. Crie a conta no aplicativo do Telegram primeiro.'
   }
   if (texto.includes('code entered was invalid')) {
     return 'Código de confirmação inválido. Confira o código recebido no Telegram.'
@@ -52,79 +40,12 @@ function traduzirErroTelegram(mensagem: string): string {
     return 'O código expirou ou não foi solicitado para este número. Envie um novo código.'
   }
   if (texto.includes('two-steps') || texto.includes('password is required')) {
-    return 'Esta conta do Telegram usa verificação em duas etapas, que ainda não é suportada.'
+    return 'Esta conta do Telegram usa verificação em duas etapas (senha), que o servidor ainda não suporta.'
   }
   if (texto.includes('a wait of') || texto.includes('flood')) {
     return 'Muitas tentativas seguidas. Aguarde alguns minutos e tente novamente.'
   }
   return mensagem
-}
-
-function CamposTelefone({
-  telefone,
-  onChange,
-}: {
-  telefone: Telefone;
-  onChange: (telefone: Telefone) => void;
-}) {
-  const id = useId()
-
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-[6rem_5rem_1fr] gap-3">
-      <div className="space-y-1.5">
-        <label htmlFor={`${id}-ddi`} className="block text-sm font-medium text-slate-700">
-          DDI
-        </label>
-        <div className="relative">
-          <span className="absolute inset-y-0 left-0 pl-4 flex items-center text-slate-500 pointer-events-none">
-            +
-          </span>
-          <input
-            id={`${id}-ddi`}
-            type="text"
-            inputMode="numeric"
-            autoComplete="tel-country-code"
-            value={telefone.ddi}
-            onChange={(e) => onChange({ ...telefone, ddi: somenteDigitos(e.target.value, 3) })}
-            placeholder="55"
-            className={`${classeInput} pl-8 pr-3`}
-          />
-        </div>
-      </div>
-
-      <div className="space-y-1.5">
-        <label htmlFor={`${id}-ddd`} className="block text-sm font-medium text-slate-700">
-          DDD
-        </label>
-        <input
-          id={`${id}-ddd`}
-          type="text"
-          inputMode="numeric"
-          autoComplete="tel-area-code"
-          value={telefone.ddd}
-          onChange={(e) => onChange({ ...telefone, ddd: somenteDigitos(e.target.value, 2) })}
-          placeholder="11"
-          className={`${classeInput} px-4`}
-        />
-      </div>
-
-      <div className="space-y-1.5 col-span-2 sm:col-span-1">
-        <label htmlFor={`${id}-celular`} className="block text-sm font-medium text-slate-700">
-          Celular
-        </label>
-        <input
-          id={`${id}-celular`}
-          type="text"
-          inputMode="numeric"
-          autoComplete="tel-local"
-          value={formatarCelular(telefone.celular)}
-          onChange={(e) => onChange({ ...telefone, celular: somenteDigitos(e.target.value, 9) })}
-          placeholder="91234-5678"
-          className={`${classeInput} px-4`}
-        />
-      </div>
-    </div>
-  )
 }
 
 export function ConectarTelegram({ codUsuario, conectado, onConectado }: ConectarTelegramProps) {
@@ -148,6 +69,7 @@ export function ConectarTelegram({ codUsuario, conectado, onConectado }: Conecta
     try {
       await onConectado()
     } catch {
+      // As conversas aparecem na próxima atualização da lista.
     }
   }
 
@@ -176,11 +98,10 @@ export function ConectarTelegram({ codUsuario, conectado, onConectado }: Conecta
       setCodigo('')
       setEtapa('codigo')
     } catch (err) {
-      const mensagem = mensagemDeErro(err)
-      if (mensagem.includes('já cadastrada')) {
+      if (contaTelegramJaVinculada(err)) {
         await marcarConectado(telefone)
       } else {
-        setErro(traduzirErroTelegram(mensagem))
+        setErro(traduzirErroTelegram(mensagemDeErro(err)))
       }
     } finally {
       setLoading(false)
@@ -267,7 +188,11 @@ export function ConectarTelegram({ codUsuario, conectado, onConectado }: Conecta
 
       {!contaConectada && etapa !== 'inicio' && (
         <div className="mt-5 space-y-4 lg:max-w-lg">
-          {erro && <div className="p-3 text-sm text-red-600 bg-red-50 rounded-xl">{erro}</div>}
+          {erro && (
+            <div role="alert" className="p-3 text-sm text-red-600 bg-red-50 rounded-xl">
+              {erro}
+            </div>
+          )}
 
           {etapa === 'numero' ? (
             <form onSubmit={enviarCodigo} className="space-y-4">
@@ -304,7 +229,7 @@ export function ConectarTelegram({ codUsuario, conectado, onConectado }: Conecta
                   value={codigo}
                   onChange={(e) => setCodigo(somenteDigitos(e.target.value, 6))}
                   placeholder="12345"
-                  className={`${classeInput} px-4 text-center text-lg font-semibold tracking-[0.4em]`}
+                  className={`${classeCampo} px-4 text-center text-lg font-semibold tracking-[0.4em]`}
                 />
               </div>
               <button

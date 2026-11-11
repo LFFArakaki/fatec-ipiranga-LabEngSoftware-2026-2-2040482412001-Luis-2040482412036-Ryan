@@ -13,7 +13,7 @@ import {
   User,
   Check,
 } from 'lucide-react'
-import { REDES_SOCIAIS, redesConectadas } from '../redesSociais'
+import { REDES_SOCIAIS, ehConversaIndividual, redesConectadas } from '../redesSociais'
 import type { Sessao } from '../api'
 
 interface PerfilProps {
@@ -30,7 +30,7 @@ export function Perfil({ onNavigate, sessao, onLogout }: PerfilProps) {
     nome: usuario.nome || 'Usuário',
     username: `@${usuario.nome_usuario.replace(/^@/, '')}`,
     conversas: String(conversas.length),
-    contatos: String(conversas.filter((conversa) => conversa.chat_id > 0).length),
+    contatos: String(conversas.filter(ehConversaIndividual).length),
     redes: redesConectadas(conversas),
   }
 

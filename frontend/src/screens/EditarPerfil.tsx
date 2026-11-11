@@ -11,14 +11,24 @@ import {
   Settings,
 } from 'lucide-react'
 import { ConectarTelegram } from '../components/ConectarTelegram'
-import { redesConectadas, removerRedesConectadas } from '../redesSociais'
+import { ConectarSignal } from '../components/ConectarSignal'
+import { redesConectadas, removerRedesConectadas, type RedeSocial } from '../redesSociais'
 import { mascararData, validarDadosUsuario } from '../validarUsuario'
-import { atualizarUsuario, excluirConta, logout, mensagemDeErro, type Sessao } from '../api'
+import {
+  atualizarUsuario,
+  excluirConta,
+  logout,
+  mensagemDeErro,
+  type AtualizarUsuarioPayload,
+  type Conversa,
+  type Sessao,
+} from '../api'
 
 interface EditarPerfilProps {
   onNavigate: (screen: string) => void;
   sessao: Sessao;
   onSessaoAtualizada: () => Promise<void>;
+  onSincronizarConversas: () => Promise<Conversa[]>;
   onContaExcluida: () => void;
 }
 
@@ -30,16 +40,25 @@ const REDES_EM_BREVE = [
 
 function ListaRedesSociais({
   codUsuario,
-  telegramConectado,
-  onConectado,
+  conectadas,
+  onSincronizarConversas,
 }: {
   codUsuario: number;
-  telegramConectado: boolean;
-  onConectado: () => Promise<void>;
+  conectadas: RedeSocial[];
+  onSincronizarConversas: () => Promise<Conversa[]>;
 }) {
   return (
     <div className="divide-y divide-slate-100">
-      <ConectarTelegram codUsuario={codUsuario} conectado={telegramConectado} onConectado={onConectado} />
+      <ConectarTelegram
+        codUsuario={codUsuario}
+        conectado={conectadas.includes('telegram')}
+        onConectado={onSincronizarConversas}
+      />
+      <ConectarSignal
+        codUsuario={codUsuario}
+        conectado={conectadas.includes('signal')}
+        onSincronizarConversas={onSincronizarConversas}
+      />
       {REDES_EM_BREVE.map((rede) => (
         <div key={rede.nome} className="p-4 lg:px-8 lg:py-5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 opacity-60">
@@ -57,7 +76,13 @@ function ListaRedesSociais({
   )
 }
 
-export function EditarPerfil({ onNavigate, sessao, onSessaoAtualizada, onContaExcluida }: EditarPerfilProps) {
+export function EditarPerfil({
+  onNavigate,
+  sessao,
+  onSessaoAtualizada,
+  onSincronizarConversas,
+  onContaExcluida,
+}: EditarPerfilProps) {
   const { usuario } = sessao
   const [nome, setNome] = useState(usuario.nome)
   const [username, setUsername] = useState(usuario.nome_usuario)
@@ -67,14 +92,15 @@ export function EditarPerfil({ onNavigate, sessao, onSessaoAtualizada, onContaEx
   const [loadingExclusao, setLoadingExclusao] = useState(false)
   const [erro, setErro] = useState('')
 
-  const telegramConectado = redesConectadas(sessao.conversas).includes('telegram')
+  const conectadas = redesConectadas(sessao.conversas)
 
   const handleDataChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setDataNascimento(mascararData(e.target.value))
   }
 
   const handleSalvar = async () => {
-    const dados = {
+    // A senha nunca vai neste PATCH: a rota a gravaria sem criptografia.
+    const dados: Required<AtualizarUsuarioPayload> = {
       nome: nome.trim(),
       nome_usuario: username.trim(),
       email: email.trim(),
@@ -245,8 +271,8 @@ export function EditarPerfil({ onNavigate, sessao, onSessaoAtualizada, onContaEx
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <ListaRedesSociais
                 codUsuario={usuario.cod}
-                telegramConectado={telegramConectado}
-                onConectado={onSessaoAtualizada}
+                conectadas={conectadas}
+                onSincronizarConversas={onSincronizarConversas}
               />
             </div>
           </div>
@@ -415,8 +441,8 @@ export function EditarPerfil({ onNavigate, sessao, onSessaoAtualizada, onContaEx
                 </div>
                 <ListaRedesSociais
                   codUsuario={usuario.cod}
-                  telegramConectado={telegramConectado}
-                  onConectado={onSessaoAtualizada}
+                  conectadas={conectadas}
+                  onSincronizarConversas={onSincronizarConversas}
                 />
               </div>
 

@@ -21,23 +21,25 @@ import {
   X,
 } from 'lucide-react'
 import {
-  ApiError,
   buscarMensagens,
   deletarMensagem,
   editarMensagem,
   enviarMensagem,
+  listarConversasPorApp,
   mensagemDeErro,
+  sessaoDoAppAusente,
   type Conversa as ConversaApi,
   type MensagemApi,
   type Sessao,
 } from '../api'
-import { REDES_SOCIAIS, redeDoApp } from '../redesSociais'
+import { REDES_SOCIAIS, redeDoApp, redesConectadas, type RedeSocial } from '../redesSociais'
 import { BolhaMensagem, type MensagemTela } from '../components/BolhaMensagem'
 
 interface ConversaProps {
   onNavigate: (screen: string) => void;
   sessao: Sessao;
-  onAtualizarSessao: () => Promise<void>;
+  /** Busca conversas novas no servidor (GET /busca-conversas/) e recarrega a lista. */
+  onSincronizarConversas: () => Promise<ConversaApi[]>;
   onReconectar: () => Promise<void>;
 }
 
@@ -60,7 +62,36 @@ function rotuloDoDia(data: Date): string {
   return data.toLocaleDateString('pt-BR')
 }
 
-const chaveMensagem = (chatId: number, mensagemId: number) => `${chatId}:${mensagemId}`
+const chaveConversa = (conversa: ConversaApi) => `${conversa.app.toLowerCase()}:${conversa.chat_id}`
+const chaveEdicao = (chatId: string, mensagemId: number) => `${chatId}:${mensagemId}`
+
+/** Converte a resposta de GET /perfil/conversa/{chat_id} para a ordem cronológica da tela. */
+function paraMensagensTela(
+  dados: MensagemApi[],
+  conversa: ConversaApi,
+  nomeUsuario: string,
+  editadas: Set<string>,
+): MensagemTela[] {
+  // O Telegram devolve da mais nova para a mais antiga; o Signal já vem em ordem de chegada.
+  const cronologicas = redeDoApp(conversa.app) === 'telegram' ? dados.slice().reverse() : dados
+  return cronologicas.map((mensagem, posicao) => {
+    const id = typeof mensagem.id === 'number' ? mensagem.id : null
+    return {
+      chave: id === null ? `posicao:${posicao}` : `id:${id}`,
+      id,
+      texto: mensagem.texto || TEXTO_MIDIA,
+      remetente: mensagem.remetente ?? '',
+      data: lerDataUtc(mensagem.data),
+      propria: mensagem.remetente === nomeUsuario,
+      editada: id !== null && editadas.has(chaveEdicao(conversa.chat_id, id)),
+    }
+  })
+}
+
+const classeFiltro = (ativo: boolean) =>
+  `shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+    ativo ? 'bg-brand-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+  }`
 
 function Carregando({ texto }: { texto: string }) {
   return (
@@ -71,10 +102,14 @@ function Carregando({ texto }: { texto: string }) {
   )
 }
 
-export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }: ConversaProps) {
+export function Conversa({ onNavigate, sessao, onSincronizarConversas, onReconectar }: ConversaProps) {
   const { usuario, conversas } = sessao
   const [busca, setBusca] = useState('')
-  const [chatAtivoId, setChatAtivoId] = useState<number | null>(null)
+  const [filtroApp, setFiltroApp] = useState<RedeSocial | null>(null)
+  const [conversasDoApp, setConversasDoApp] = useState<{ rede: RedeSocial; lista: ConversaApi[] } | null>(null)
+  const [falhaFiltro, setFalhaFiltro] = useState<{ rede: RedeSocial; mensagem: string } | null>(null)
+  const [tentativaFiltro, setTentativaFiltro] = useState(0)
+  const [conversaAtiva, setConversaAtiva] = useState<ConversaApi | null>(null)
   const [mensagens, setMensagens] = useState<MensagemTela[]>([])
   const [message, setMessage] = useState('')
 
@@ -82,7 +117,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
   const [erroConversas, setErroConversas] = useState('')
   const [carregandoMensagens, setCarregandoMensagens] = useState(false)
   const [erroMensagens, setErroMensagens] = useState('')
-  const [telegramDesconectado, setTelegramDesconectado] = useState(false)
+  const [appDesconectado, setAppDesconectado] = useState(false)
   const [erroAcao, setErroAcao] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [editandoId, setEditandoId] = useState<number | null>(null)
@@ -91,125 +126,152 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
   const [reconectando, setReconectando] = useState(false)
 
   const requisicaoAtual = useRef(0)
-  const chatAtivoRef = useRef<number | null>(null)
-  const proximoIdTemporario = useRef(-1)
+  const conversaAtivaRef = useRef<string | null>(null)
+  const contadorPendentes = useRef(0)
   const editadas = useRef(new Set<string>())
   const areaMobileRef = useRef<HTMLDivElement>(null)
   const areaDesktopRef = useRef<HTMLDivElement>(null)
 
-  const conversaAtiva = conversas.find((conversa) => conversa.chat_id === chatAtivoId) ?? null
+  const redes = redesConectadas(conversas)
+  const filtroAtivo = filtroApp && redes.includes(filtroApp) ? filtroApp : null
+  const listaDoFiltro = filtroAtivo && conversasDoApp?.rede === filtroAtivo ? conversasDoApp.lista : null
+  const erroFiltro = filtroAtivo && falhaFiltro?.rede === filtroAtivo ? falhaFiltro.mensagem : ''
+  const conversasVisiveis = filtroAtivo ? (listaDoFiltro ?? []) : conversas
   const termoBusca = busca.trim().toLowerCase()
-  const conversasFiltradas = conversas.filter((conversa) =>
+  const conversasFiltradas = conversasVisiveis.filter((conversa) =>
     conversa.nome_chat.toLowerCase().includes(termoBusca),
   )
+  const chaveAtiva = conversaAtiva ? chaveConversa(conversaAtiva) : null
 
-  const sincronizarConversas = useCallback(async () => {
+  const sincronizarLista = useCallback(async () => {
     try {
-      await onAtualizarSessao()
+      await onSincronizarConversas()
       setErroConversas('')
     } catch (erro) {
-      setErroConversas(mensagemDeErro(erro, 'Não foi possível carregar suas conversas.'))
+      setErroConversas(mensagemDeErro(erro, 'Não foi possível atualizar suas conversas.'))
     } finally {
       setCarregandoConversas(false)
     }
-  }, [onAtualizarSessao])
+  }, [onSincronizarConversas])
 
   useEffect(() => {
-    sincronizarConversas()
-  }, [sincronizarConversas])
+    sincronizarLista()
+  }, [sincronizarLista])
 
   const atualizarConversas = () => {
     setCarregandoConversas(true)
-    sincronizarConversas()
+    sincronizarLista()
   }
 
+  // Filtro por aplicativo: GET /perfil/conversas/{app}, refeito quando a lista da sessão muda.
+  useEffect(() => {
+    if (!filtroAtivo) return
+    let cancelado = false
+    listarConversasPorApp(REDES_SOCIAIS[filtroAtivo].nome)
+      .then((lista) => {
+        if (cancelado) return
+        setConversasDoApp({ rede: filtroAtivo, lista })
+        setFalhaFiltro(null)
+      })
+      .catch((erro) => {
+        if (cancelado) return
+        setFalhaFiltro({ rede: filtroAtivo, mensagem: mensagemDeErro(erro, 'Não foi possível filtrar as conversas.') })
+      })
+    return () => {
+      cancelado = true
+    }
+  }, [filtroAtivo, conversas, tentativaFiltro])
+
   const carregarMensagens = useCallback(
-    async (chatId: number, silencioso = false) => {
-      if (chatAtivoRef.current !== chatId) return
+    async (conversa: ConversaApi, silencioso = false) => {
+      const chave = chaveConversa(conversa)
+      if (conversaAtivaRef.current !== chave) return
       const requisicao = ++requisicaoAtual.current
       if (!silencioso) {
         setCarregandoMensagens(true)
         setErroMensagens('')
-        setTelegramDesconectado(false)
+        setAppDesconectado(false)
       }
 
       try {
-        const dados: MensagemApi[] = await buscarMensagens(chatId)
-        if (requisicao !== requisicaoAtual.current || chatAtivoRef.current !== chatId) return
-        setMensagens(
-          dados
-            .slice()
-            .reverse()
-            .map((mensagem) => ({
-              id: mensagem.id,
-              texto: mensagem.texto,
-              data: lerDataUtc(mensagem.data),
-              propria: mensagem.remetente === usuario.nome,
-              editada: editadas.current.has(chaveMensagem(chatId, mensagem.id)),
-            })),
-        )
+        const dados = await buscarMensagens(conversa.chat_id)
+        if (requisicao !== requisicaoAtual.current || conversaAtivaRef.current !== chave) return
+        setMensagens(paraMensagensTela(dados, conversa, usuario.nome, editadas.current))
         setErroMensagens('')
-        setTelegramDesconectado(false)
+        setAppDesconectado(false)
       } catch (erro) {
-        if (requisicao !== requisicaoAtual.current || silencioso) return
-        const texto = mensagemDeErro(erro)
-        setTelegramDesconectado(
-          erro instanceof ApiError && erro.status === 400 && texto.toLowerCase().includes('não conectado ao telegram'),
-        )
-        setErroMensagens(texto)
+        if (requisicao !== requisicaoAtual.current) return
+        const desconectado = sessaoDoAppAusente(erro, usuario.cod)
+        if (silencioso && !desconectado) return
+        setAppDesconectado(desconectado)
+        setErroMensagens(mensagemDeErro(erro))
       } finally {
         if (requisicao === requisicaoAtual.current) setCarregandoMensagens(false)
       }
     },
-    [usuario.nome],
+    [usuario.nome, usuario.cod],
   )
 
   const abrirConversa = (conversa: ConversaApi) => {
-    if (conversa.chat_id === chatAtivoId) return
-    chatAtivoRef.current = conversa.chat_id
-    setChatAtivoId(conversa.chat_id)
+    const chave = chaveConversa(conversa)
+    if (chave === conversaAtivaRef.current) return
+    conversaAtivaRef.current = chave
+    setConversaAtiva(conversa)
     setMensagens([])
     setMessage('')
     setEditandoId(null)
     setErroAcao('')
-    carregarMensagens(conversa.chat_id)
+    carregarMensagens(conversa)
   }
 
   const fecharConversa = () => {
     requisicaoAtual.current++
-    chatAtivoRef.current = null
-    setChatAtivoId(null)
+    conversaAtivaRef.current = null
+    setConversaAtiva(null)
     setMensagens([])
     setEditandoId(null)
     setErroAcao('')
     setErroMensagens('')
+    setAppDesconectado(false)
     setCarregandoMensagens(false)
   }
 
   const pausado =
     enviando || editandoId !== null || salvandoId !== null || excluindoId !== null || carregandoMensagens || !!erroMensagens
   useEffect(() => {
-    if (chatAtivoId === null || pausado) return
-    const timer = setInterval(() => carregarMensagens(chatAtivoId, true), INTERVALO_ATUALIZACAO_MS)
+    if (!conversaAtiva || pausado) return
+    const timer = setInterval(() => carregarMensagens(conversaAtiva, true), INTERVALO_ATUALIZACAO_MS)
     return () => clearInterval(timer)
-  }, [chatAtivoId, pausado, carregarMensagens])
+  }, [conversaAtiva, pausado, carregarMensagens])
 
-  const ultimoId = mensagens.length ? mensagens[mensagens.length - 1].id : null
+  const ultimaChave = mensagens.at(-1)?.chave ?? null
   useEffect(() => {
     for (const area of [areaMobileRef.current, areaDesktopRef.current]) {
       if (area) area.scrollTop = area.scrollHeight
     }
-  }, [ultimoId, chatAtivoId])
+  }, [ultimaChave, chaveAtiva])
+
+  const tratarErroDeAcao = (erro: unknown) => {
+    if (sessaoDoAppAusente(erro, usuario.cod)) {
+      setAppDesconectado(true)
+      setErroMensagens(mensagemDeErro(erro))
+      return
+    }
+    setErroAcao(mensagemDeErro(erro))
+  }
 
   const handleEnviarMensagem = async (e?: React.FormEvent) => {
     e?.preventDefault()
     const texto = message.trim()
-    if (!texto || !conversaAtiva || enviando) return
+    if (!texto || !conversaAtiva || enviando || appDesconectado) return
 
-    const chatId = conversaAtiva.chat_id
+    const conversa = conversaAtiva
+    const chave = chaveConversa(conversa)
     const temporaria: MensagemTela = {
-      id: proximoIdTemporario.current--,
+      chave: `pendente:${++contadorPendentes.current}`,
+      id: null,
       texto,
+      remetente: usuario.nome,
       data: new Date(),
       propria: true,
       pendente: true,
@@ -221,16 +283,17 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
     setMensagens((atuais) => [...atuais, temporaria])
 
     try {
-      await enviarMensagem(chatId, { app: conversaAtiva.app, mensagem: texto })
-      await carregarMensagens(chatId, true)
+      await enviarMensagem(conversa.chat_id, { app: conversa.app, mensagem: texto })
+      // A rota não devolve a mensagem criada: recarregar traz o id real (necessário para editar/excluir).
+      await carregarMensagens(conversa, true)
       setMensagens((atuais) =>
-        atuais.map((mensagem) => (mensagem.id === temporaria.id ? { ...mensagem, pendente: false } : mensagem)),
+        atuais.map((mensagem) => (mensagem.chave === temporaria.chave ? { ...mensagem, pendente: false } : mensagem)),
       )
     } catch (erro) {
-      setMensagens((atuais) => atuais.filter((mensagem) => mensagem.id !== temporaria.id))
-      if (chatAtivoRef.current === chatId) {
+      setMensagens((atuais) => atuais.filter((mensagem) => mensagem.chave !== temporaria.chave))
+      if (conversaAtivaRef.current === chave) {
         setMessage((atual) => atual || texto)
-        setErroAcao(mensagemDeErro(erro))
+        tratarErroDeAcao(erro)
       }
     } finally {
       setEnviando(false)
@@ -245,7 +308,9 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
   }
 
   const salvarEdicao = async (mensagem: MensagemTela, novoTexto: string) => {
-    if (!conversaAtiva) return
+    const conversa = conversaAtiva
+    const mensagemId = mensagem.id
+    if (!conversa || mensagemId === null) return
     const texto = novoTexto.trim()
     if (!texto) return
     if (texto === mensagem.texto) {
@@ -253,42 +318,44 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
       return
     }
 
-    const chatId = conversaAtiva.chat_id
-    setSalvandoId(mensagem.id)
+    const chave = chaveConversa(conversa)
+    setSalvandoId(mensagemId)
     setErroAcao('')
 
     try {
-      await editarMensagem(chatId, { app: conversaAtiva.app, message_id: mensagem.id, nova_mensagem: texto })
-      editadas.current.add(chaveMensagem(chatId, mensagem.id))
-      if (chatAtivoRef.current === chatId) {
+      await editarMensagem(conversa.chat_id, { app: conversa.app, message_id: mensagemId, nova_mensagem: texto })
+      editadas.current.add(chaveEdicao(conversa.chat_id, mensagemId))
+      if (conversaAtivaRef.current === chave) {
         setMensagens((atuais) =>
-          atuais.map((atual) => (atual.id === mensagem.id ? { ...atual, texto, editada: true } : atual)),
+          atuais.map((atual) => (atual.id === mensagemId ? { ...atual, texto, editada: true } : atual)),
         )
       }
       setEditandoId(null)
     } catch (erro) {
-      setErroAcao(mensagemDeErro(erro))
+      tratarErroDeAcao(erro)
     } finally {
       setSalvandoId(null)
     }
   }
 
   const excluirMensagem = async (mensagem: MensagemTela) => {
-    if (!conversaAtiva) return
+    const conversa = conversaAtiva
+    const mensagemId = mensagem.id
+    if (!conversa || mensagemId === null) return
     if (!window.confirm('Excluir esta mensagem para todos na conversa?')) return
 
-    const chatId = conversaAtiva.chat_id
-    setExcluindoId(mensagem.id)
+    const chave = chaveConversa(conversa)
+    setExcluindoId(mensagemId)
     setErroAcao('')
 
     try {
-      await deletarMensagem(chatId, { app: conversaAtiva.app, message_id: mensagem.id })
-      if (chatAtivoRef.current === chatId) {
-        setMensagens((atuais) => atuais.filter((atual) => atual.id !== mensagem.id))
+      await deletarMensagem(conversa.chat_id, { app: conversa.app, message_id: mensagemId })
+      if (conversaAtivaRef.current === chave) {
+        setMensagens((atuais) => atuais.filter((atual) => atual.id !== mensagemId))
       }
-      setEditandoId((atual) => (atual === mensagem.id ? null : atual))
+      setEditandoId((atual) => (atual === mensagemId ? null : atual))
     } catch (erro) {
-      setErroAcao(mensagemDeErro(erro))
+      tratarErroDeAcao(erro)
     } finally {
       setExcluindoId(null)
     }
@@ -303,6 +370,35 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
     const rede = redeDoApp(app)
     return rede ? REDES_SOCIAIS[rede].nome : app
   }
+
+  const renderFiltros = () =>
+    redes.length > 0 && (
+      <div role="group" aria-label="Filtrar conversas por aplicativo" className="flex gap-2 overflow-x-auto mt-3 pb-0.5">
+        <button
+          type="button"
+          onClick={() => setFiltroApp(null)}
+          aria-pressed={!filtroAtivo}
+          className={classeFiltro(!filtroAtivo)}
+        >
+          Todas
+        </button>
+        {redes.map((rede) => {
+          const { nome, Icone } = REDES_SOCIAIS[rede]
+          return (
+            <button
+              key={rede}
+              type="button"
+              onClick={() => setFiltroApp(rede)}
+              aria-pressed={filtroAtivo === rede}
+              className={classeFiltro(filtroAtivo === rede)}
+            >
+              <Icone className="w-3.5 h-3.5" />
+              {nome}
+            </button>
+          )
+        })}
+      </div>
+    )
 
   const renderListaConversas = () => {
     if (conversas.length === 0) {
@@ -323,30 +419,50 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
       return (
         <div className="p-6 text-center">
           <p className="text-sm text-slate-500">
-            Nenhuma conversa ainda. Conecte seu Telegram para ver suas conversas aqui.
+            Nenhuma conversa ainda. Conecte o Telegram ou o Signal para ver suas conversas aqui.
           </p>
           <button
             onClick={() => onNavigate('editar-perfil')}
             className="mt-4 px-4 py-2 text-sm bg-brand-500 hover:bg-brand-600 text-white font-semibold rounded-xl transition-colors shadow-sm cursor-pointer"
           >
-            Conectar Telegram
+            Conectar redes
           </button>
         </div>
       )
     }
 
+    if (filtroAtivo && !listaDoFiltro) {
+      if (erroFiltro) {
+        return (
+          <div className="p-6 text-center">
+            <p className="text-sm text-red-600">{erroFiltro}</p>
+            <button
+              onClick={() => {
+                setFalhaFiltro(null)
+                setTentativaFiltro((tentativa) => tentativa + 1)
+              }}
+              className="mt-3 text-sm text-brand-600 font-semibold hover:underline outline-none cursor-pointer"
+            >
+              Tentar novamente
+            </button>
+          </div>
+        )
+      }
+      return <Carregando texto={`Carregando conversas do ${REDES_SOCIAIS[filtroAtivo].nome}...`} />
+    }
+
+    const aviso = erroConversas || (filtroAtivo ? erroFiltro : '')
+
     return (
       <>
-        {erroConversas && (
-          <p className="px-4 py-2 text-xs text-red-600 bg-red-50 border-b border-red-100">{erroConversas}</p>
-        )}
+        {aviso && <p className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">{aviso}</p>}
         {conversasFiltradas.length === 0 ? (
           <div className="p-6 text-center text-slate-400 text-sm">Nenhuma conversa encontrada.</div>
         ) : (
           conversasFiltradas.map((conversa) => {
             const rede = redeDoApp(conversa.app)
             const infoRede = rede ? REDES_SOCIAIS[rede] : null
-            const ativa = conversa.chat_id === chatAtivoId
+            const ativa = chaveConversa(conversa) === chaveAtiva
             return (
               <button
                 key={conversa.cod}
@@ -390,17 +506,17 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
         <div className="flex items-center justify-center h-full">
           <div className="max-w-sm bg-white/90 backdrop-blur-sm rounded-2xl shadow-sm p-6 text-center">
             <div className="w-12 h-12 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
-              {telegramDesconectado ? (
+              {appDesconectado ? (
                 <WifiOff className="w-6 h-6 text-red-500" />
               ) : (
                 <CircleAlert className="w-6 h-6 text-red-500" />
               )}
             </div>
-            {telegramDesconectado ? (
+            {appDesconectado ? (
               <>
                 <p className="text-slate-700 text-sm">
-                  A sessão do Telegram não está ativa no servidor. Saia e entre de novo para reconectar
-                  automaticamente.
+                  A sessão do {nomeDoApp(conversaAtiva.app)} não está ativa no servidor. Saia e entre de novo para
+                  reconectar automaticamente.
                 </p>
                 <button
                   onClick={handleReconectar}
@@ -414,7 +530,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
               <>
                 <p className="text-slate-700 text-sm">{erroMensagens}</p>
                 <button
-                  onClick={() => carregarMensagens(conversaAtiva.chat_id)}
+                  onClick={() => carregarMensagens(conversaAtiva)}
                   className="mt-4 px-4 py-2 text-sm bg-brand-500 hover:bg-brand-600 text-white font-semibold rounded-xl transition-colors shadow-sm cursor-pointer"
                 >
                   Tentar novamente
@@ -438,14 +554,18 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
       )
     }
 
+    const rede = redeDoApp(conversaAtiva.app)
+    const permiteAlterar = rede !== null && REDES_SOCIAIS[rede].permiteAlterarMensagens
+
     return mensagens.map((mensagem, indice) => {
       const dia = mensagem.data ? rotuloDoDia(mensagem.data) : ''
       const anterior = indice > 0 ? mensagens[indice - 1].data : null
       const mostrarDia = dia && (!anterior || rotuloDoDia(anterior) !== dia)
-      const alteravel = mensagem.propria && !mensagem.pendente && mensagem.id > 0
+      const mensagemId = mensagem.id
+      const alteravel = permiteAlterar && mensagem.propria && !mensagem.pendente && mensagemId !== null
 
       return (
-        <Fragment key={mensagem.id}>
+        <Fragment key={mensagem.chave}>
           {mostrarDia && (
             <div className="flex justify-center my-4">
               <div className="bg-white/80 backdrop-blur-sm px-3 py-1 rounded-lg text-xs font-medium text-slate-500 shadow-sm">
@@ -456,14 +576,17 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
           <BolhaMensagem
             mensagem={mensagem}
             compacta={compacta}
+            mostrarRemetente={
+              !mensagem.propria && !!mensagem.remetente && mensagem.remetente !== conversaAtiva.nome_chat
+            }
             podeEditar={alteravel && mensagem.texto !== TEXTO_MIDIA}
             podeExcluir={alteravel}
-            editando={editandoId === mensagem.id}
-            salvando={salvandoId === mensagem.id}
-            excluindo={excluindoId === mensagem.id}
+            editando={mensagemId !== null && editandoId === mensagemId}
+            salvando={mensagemId !== null && salvandoId === mensagemId}
+            excluindo={mensagemId !== null && excluindoId === mensagemId}
             onIniciarEdicao={() => {
               setErroAcao('')
-              setEditandoId(mensagem.id)
+              setEditandoId(mensagemId)
             }}
             onCancelarEdicao={() => setEditandoId(null)}
             onSalvarEdicao={(texto) => salvarEdicao(mensagem, texto)}
@@ -496,7 +619,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
   const botaoAtualizar = (classe: string) => (
     <button
       type="button"
-      onClick={() => conversaAtiva && carregarMensagens(conversaAtiva.chat_id)}
+      onClick={() => conversaAtiva && carregarMensagens(conversaAtiva)}
       disabled={!conversaAtiva || carregandoMensagens}
       aria-label="Atualizar mensagens"
       title="Atualizar mensagens"
@@ -505,6 +628,8 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
       <RefreshCw className={`w-5 h-5 ${carregandoMensagens ? 'animate-spin' : ''}`} />
     </button>
   )
+
+  const placeholderMensagem = appDesconectado ? 'Reconecte-se para enviar mensagens' : 'Mensagem...'
 
   return (
     <div className="h-screen w-full bg-[#E5DDD5] overflow-hidden">
@@ -537,7 +662,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
                   </div>
                   <div className="min-w-0">
                     <h2 className="text-base font-semibold text-slate-900 leading-tight truncate">
-                      {conversaAtiva.nome_chat}
+                      {conversaAtiva.nome_chat || 'Sem nome'}
                     </h2>
                     <p className="text-xs text-brand-600 font-medium">{nomeDoApp(conversaAtiva.app)}</p>
                   </div>
@@ -574,9 +699,10 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={handleTeclaCampo}
-                  placeholder="Mensagem..."
+                  disabled={appDesconectado}
+                  placeholder={placeholderMensagem}
                   aria-label="Mensagem"
-                  className="flex-1 max-h-32 py-3.5 bg-transparent outline-none resize-none text-[15px] text-slate-900 placeholder:text-slate-400"
+                  className="flex-1 max-h-32 py-3.5 bg-transparent outline-none resize-none text-[15px] text-slate-900 placeholder:text-slate-400 disabled:cursor-not-allowed"
                   style={{
                     minHeight: '52px',
                   }}
@@ -588,9 +714,9 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
 
               <button
                 type="submit"
-                disabled={enviando}
+                disabled={enviando || appDesconectado}
                 aria-label="Enviar mensagem"
-                className="w-12 h-12 rounded-full bg-brand-500 text-white flex items-center justify-center shadow-sm hover:bg-brand-600 transition-colors flex-shrink-0 cursor-pointer disabled:opacity-60"
+                className="w-12 h-12 rounded-full bg-brand-500 text-white flex items-center justify-center shadow-sm hover:bg-brand-600 transition-colors flex-shrink-0 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {enviando ? (
                   <LoaderCircle className="w-5 h-5 animate-spin" />
@@ -640,6 +766,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-100 border-transparent focus:bg-white border focus:border-brand-500 focus:ring-2 focus:ring-brand-100 rounded-xl outline-none transition-all text-slate-900 placeholder:text-slate-500"
                 />
               </div>
+              {renderFiltros()}
             </div>
 
             <div className="flex-1 overflow-y-auto">{renderListaConversas()}</div>
@@ -706,6 +833,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-100 border-transparent focus:bg-white border focus:border-brand-500 focus:ring-2 focus:ring-brand-100 rounded-xl outline-none transition-all text-slate-900 placeholder:text-slate-500"
               />
             </div>
+            {renderFiltros()}
           </div>
 
           <div className="flex-1 overflow-y-auto">{renderListaConversas()}</div>
@@ -727,7 +855,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
               </div>
               <div className="min-w-0">
                 <h2 className="text-lg font-bold text-slate-900 leading-tight truncate">
-                  {conversaAtiva?.nome_chat || 'Selecione um chat'}
+                  {conversaAtiva ? conversaAtiva.nome_chat || 'Sem nome' : 'Selecione um chat'}
                 </h2>
                 {conversaAtiva && (
                   <p className="text-sm text-brand-600 font-medium">{nomeDoApp(conversaAtiva.app)}</p>
@@ -771,8 +899,14 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={handleTeclaCampo}
-                disabled={!conversaAtiva}
-                placeholder={conversaAtiva ? 'Mensagem... (Enter envia, Shift+Enter quebra linha)' : 'Selecione uma conversa'}
+                disabled={!conversaAtiva || appDesconectado}
+                placeholder={
+                  !conversaAtiva
+                    ? 'Selecione uma conversa'
+                    : appDesconectado
+                      ? placeholderMensagem
+                      : 'Mensagem... (Enter envia, Shift+Enter quebra linha)'
+                }
                 aria-label="Mensagem"
                 className="flex-1 max-h-32 py-4 bg-transparent outline-none resize-none text-[15px] text-slate-900 placeholder:text-slate-400 disabled:cursor-not-allowed"
                 style={{
@@ -783,7 +917,7 @@ export function Conversa({ onNavigate, sessao, onAtualizarSessao, onReconectar }
 
             <button
               type="submit"
-              disabled={!conversaAtiva || enviando}
+              disabled={!conversaAtiva || enviando || appDesconectado}
               aria-label="Enviar mensagem"
               className="w-14 h-14 rounded-full bg-brand-500 text-white flex items-center justify-center shadow-sm hover:bg-brand-600 transition-colors flex-shrink-0 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >

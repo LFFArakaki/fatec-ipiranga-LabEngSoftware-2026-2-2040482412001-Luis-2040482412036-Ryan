@@ -139,13 +139,19 @@ export function Login({ onNavigate, onLogin, aviso }: LoginProps) {
               </div>
             </div>
 
-            <button 
+            <button
               type="submit"
               disabled={loading}
               className="w-full py-3.5 bg-brand-500 hover:bg-brand-600 text-white font-semibold rounded-xl transition-colors shadow-sm mt-4 cursor-pointer disabled:opacity-50"
             >
               {loading ? 'Entrando...' : 'Entrar'}
             </button>
+
+            {loading && (
+              <p role="status" className="text-center text-sm text-slate-500">
+                Reconectando automaticamente suas redes sociais já vinculadas...
+              </p>
+            )}
           </form>
 
           <div className="mt-8 text-center">

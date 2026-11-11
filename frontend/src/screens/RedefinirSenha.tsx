@@ -10,7 +10,8 @@ interface RedefinirSenhaProps {
 const SEGUNDOS_ATE_REDIRECIONAR = 5
 
 export function RedefinirSenha({ onNavigate }: RedefinirSenhaProps) {
-  const [token] = useState(() => new URLSearchParams(window.location.search).get('token'))
+  // Link do e-mail: /redefinir-senha?token=<JWT válido por 10 minutos>
+  const [token] = useState(() => new URLSearchParams(window.location.search).get('token')?.trim() || null)
   const [senha, setSenha] = useState('')
   const [confirmarSenha, setConfirmarSenha] = useState('')
   const [mostrarSenha, setMostrarSenha] = useState(false)

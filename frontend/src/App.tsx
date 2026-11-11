@@ -13,6 +13,8 @@ import {
   msAteExpirar,
   obterPerfil,
   sessaoAtiva,
+  sincronizarConversas,
+  type Conversa as ConversaApi,
   type Sessao,
 } from './api'
 
@@ -25,6 +27,11 @@ import { EditarPerfil } from './screens/EditarPerfil'
 import { Conversa } from './screens/Conversa'
 
 const TELAS_PUBLICAS = ['login', 'cadastro', 'esqueci-senha', 'redefinir-senha']
+
+/** Caminho do link enviado por e-mail pelo back-end: http://localhost:80/redefinir-senha?token=... */
+const ROTA_REDEFINIR_SENHA = '/redefinir-senha'
+
+const abriuLinkDeRedefinicao = () => window.location.pathname.replace(/\/+$/, '') === ROTA_REDEFINIR_SENHA
 
 function CarregandoSessao({
   erro,
@@ -72,7 +79,7 @@ export function App() {
   const screenInit = useScreenInit()
 
   const [activeTab, setActiveTab] = useState(() => {
-    if (window.location.pathname === '/redefinir-senha') {
+    if (abriuLinkDeRedefinicao()) {
       return 'redefinir-senha'
     }
 
@@ -111,11 +118,37 @@ export function App() {
     setSessao({ usuario, conversas })
   }, [])
 
+  /**
+   * GET /busca-conversas/ traz do Telegram e do Signal (reconectados pelo servidor no login) as
+   * conversas novas; depois a lista é relida do banco. Se a busca falhar, a lista salva é
+   * atualizada mesmo assim e o erro é repassado para a tela avisar o usuário.
+   */
+  const sincronizarConversasDaSessao = useCallback(async (): Promise<ConversaApi[]> => {
+    let falhaNaBusca: unknown = null
+    try {
+      await sincronizarConversas()
+    } catch (erro) {
+      if (erro instanceof ApiError && erro.status === 401) throw erro
+      falhaNaBusca = erro
+    }
+    const conversas = await listarConversas()
+    setSessao((atual) => (atual ? { ...atual, conversas } : atual))
+    if (falhaNaBusca) throw falhaNaBusca
+    return conversas
+  }, [])
+
+  const sincronizarEmSegundoPlano = useCallback(() => {
+    sincronizarConversasDaSessao().catch(() => {
+      // A lista já salva continua na tela; a tela de conversas permite tentar de novo.
+    })
+  }, [sincronizarConversasDaSessao])
+
   const iniciarSessao = useCallback(async () => {
     if (carregandoSessao.current) return
     carregandoSessao.current = true
     try {
       await carregarSessao()
+      sincronizarEmSegundoPlano()
     } catch (erro) {
       if (erro instanceof ApiError && erro.status === 401) return
       if (erro instanceof ApiError && erro.status === 404) {
@@ -126,8 +159,11 @@ export function App() {
     } finally {
       carregandoSessao.current = false
     }
-  }, [carregarSessao, encerrarSessao])
+  }, [carregarSessao, encerrarSessao, sincronizarEmSegundoPlano])
 
+  // O login já reconectou no servidor as sessões salvas do Telegram e do Signal: as conversas
+  // salvas aparecem na hora (rede "Conectado", sem pedir telefone/código) e a busca de conversas
+  // novas roda em segundo plano.
   const handleLogin = useCallback(async () => {
     try {
       await carregarSessao()
@@ -136,7 +172,8 @@ export function App() {
       throw erro
     }
     handleNavigate('perfil')
-  }, [carregarSessao, handleNavigate])
+    sincronizarEmSegundoPlano()
+  }, [carregarSessao, handleNavigate, sincronizarEmSegundoPlano])
 
   const handleLogout = useCallback(async () => {
     await logout()
@@ -145,7 +182,7 @@ export function App() {
 
   const handleReconectar = useCallback(async () => {
     await logout()
-    encerrarSessao('Entre novamente para reconectar seu Telegram automaticamente.')
+    encerrarSessao('Entre novamente para reconectar suas redes sociais automaticamente.')
   }, [encerrarSessao])
 
   const handleCadastrado = useCallback(() => {
@@ -197,6 +234,7 @@ export function App() {
             onNavigate={handleNavigate}
             sessao={sessao}
             onSessaoAtualizada={carregarSessao}
+            onSincronizarConversas={sincronizarConversasDaSessao}
             onContaExcluida={handleContaExcluida}
           />
         )
@@ -205,7 +243,7 @@ export function App() {
           <Conversa
             onNavigate={handleNavigate}
             sessao={sessao}
-            onAtualizarSessao={carregarSessao}
+            onSincronizarConversas={sincronizarConversasDaSessao}
             onReconectar={handleReconectar}
           />
         )
