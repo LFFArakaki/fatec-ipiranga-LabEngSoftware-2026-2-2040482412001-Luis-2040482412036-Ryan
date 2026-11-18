@@ -64,9 +64,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
 @app.post("/cadastrar/")
 def cadastrar_usuario(usuario: Usuario, session: SessionDep) -> UsuarioVisivel:
     usuario.senha = bcrypt.hashpw(usuario.senha.encode(), bcrypt.gensalt())
-    session.add(usuario)
-    session.commit()
-    session.refresh(usuario)
+    usuario = utils.manipular_db(session, usuario)
     return usuario
  
 @app.get("/listar/usuarios/")
@@ -110,9 +108,7 @@ def editar_usuario(cod_usuario: int, session: SessionDep, usuario_novo: Usuario)
         raise HTTPException(status_code=404, detail="User not found")
     dados_usuario = usuario_novo.model_dump(exclude_unset=True)
     usuario.sqlmodel_update(dados_usuario)
-    session.add(usuario)
-    session.commit()
-    session.refresh(usuario)
+    usuario = utils.manipular_db(session, usuario)
     return usuario
 
 @app.post("/login/")
@@ -140,10 +136,8 @@ async def realizar_login(dados: Annotated[OAuth2PasswordRequestForm, Depends()],
 async def obter_perfil(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     statement = select(Usuario).where(Usuario.cod == user_id)
@@ -154,12 +148,12 @@ async def obter_perfil(session: SessionDep, token: Annotated[str, Depends(oauth2
 
 @app.get("/busca-conversas/")
 async def buscar_conversas(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
-
+    
     tg_client = clients_tg.get(user_id)
     signal_client = clients_signal.get(user_id)
 
@@ -180,10 +174,8 @@ async def buscar_conversas(session: SessionDep, token: Annotated[str, Depends(oa
                 nome_chat=nome
             )
             if not session.exec(select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == dialog.id)).first():
-                session.add(conversa)
-                session.commit()
-                session.refresh(conversa)
-
+                conversa = utils.manipular_db(session, conversa)
+                
     if signal_client:
         groups = signal_client.list_groups()
         for group in groups:
@@ -199,9 +191,7 @@ async def buscar_conversas(session: SessionDep, token: Annotated[str, Depends(oa
                 mensagens={}
             )
             if not session.exec(select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == group['id'])).first():
-                session.add(conversa)
-                session.commit()
-                session.refresh(conversa)
+                conversa = utils.manipular_db(session, conversa)
 
                 conversa_registrada = session.exec(select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == group['id'])).first()
                 conversa_signal = ConversaSignal(
@@ -211,9 +201,7 @@ async def buscar_conversas(session: SessionDep, token: Annotated[str, Depends(oa
                     mensagens={}
                 )
                 if not session.exec(select(ConversaSignal).where(ConversaSignal.cod_conversa == conversa_registrada.cod)).first():
-                    session.add(conversa_signal)
-                    session.commit()
-                    session.refresh(conversa_signal)
+                    conversa_signal = utils.manipular_db(session, conversa_signal)
 
         contacts = signal_client.get_contacts()
         for contact in contacts:
@@ -224,9 +212,7 @@ async def buscar_conversas(session: SessionDep, token: Annotated[str, Depends(oa
                 nome_chat=contact['name']
             )
             if not session.exec(select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == contact['number'])).first():
-                session.add(conversa)
-                session.commit()
-                session.refresh(conversa)
+                conversa = utils.manipular_db(session, conversa)
 
                 conversa_registrada = session.exec(select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == contact['number'])).first()
                 conversa_signal = ConversaSignal(
@@ -236,19 +222,15 @@ async def buscar_conversas(session: SessionDep, token: Annotated[str, Depends(oa
                     mensagens={}
                 )
                 if not session.exec(select(ConversaSignal).where(ConversaSignal.cod_conversa == conversa_registrada.cod)).first():
-                    session.add(conversa_signal)
-                    session.commit()
-                    session.refresh(conversa_signal)
+                    conversa_signal = utils.manipular_db(session, conversa_signal)
     return {"status": "success", "message": "Conversas buscadas e registradas com sucesso!"}
 
 @app.get("/mensagens-signal/")
 async def listar_mensagens_signal(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
     
     statement = select(ConversaSignal).where(ConversaSignal.cod_usuario == user_id)
@@ -259,10 +241,8 @@ async def listar_mensagens_signal(session: SessionDep, token: Annotated[str, Dep
 def listar_conversas(session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     statement = select(Conversa).where(Conversa.cod_usuario == user_id)
@@ -273,10 +253,8 @@ def listar_conversas(session: SessionDep, token: Annotated[str, Depends(oauth2_s
 async def listar_conversas_por_app(app: str, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     statement = select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.app == app)
@@ -289,10 +267,8 @@ async def exibir_mensagens(chat_id: str, session: SessionDep, token: Annotated[s
 
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     statement = select(Usuario).where(Usuario.cod == user_id)
@@ -346,17 +322,13 @@ async def exibir_mensagens(chat_id: str, session: SessionDep, token: Annotated[s
                             conversa_log = outra_conversa_signal.log.copy()
                             conversa_log[f"mensagem{message['envelope']['timestamp']}"] = msg
                             outra_conversa_signal.log = conversa_log
-                            session.add(outra_conversa_signal)
-                            session.commit()
-                            session.refresh(outra_conversa_signal)
+                            outra_conversa_signal = utils.manipular_db(session, outra_conversa_signal)
                     else:        
                         if conversa_signal:
                             conversa_log = conversa_signal.log.copy()
                             conversa_log[f"mensagem{message['envelope']['timestamp']}"] = msg
                             conversa_signal.log = conversa_log
-                            session.add(conversa_signal)
-                            session.commit()
-                            session.refresh(conversa_signal)
+                            conversa_signal = utils.manipular_db(session, conversa_signal)
                 else:
                     contact_id = message['envelope']['sourceUuid']
                     remetente = message['envelope']['sourceName']
@@ -373,17 +345,13 @@ async def exibir_mensagens(chat_id: str, session: SessionDep, token: Annotated[s
                             conversa_log = outra_conversa_signal.log.copy()
                             conversa_log[f"mensagem{message['envelope']['timestamp']}"] = msg
                             outra_conversa_signal.log = conversa_log
-                            session.add(outra_conversa_signal)
-                            session.commit()
-                            session.refresh(outra_conversa_signal)
+                            outra_conversa_signal = utils.manipular_db(session, outra_conversa_signal)
                     else:
                         if conversa_signal:
                             conversa_log = conversa_signal.log.copy()
                             conversa_log[f"mensagem{message['envelope']['timestamp']}"] = msg
                             conversa_signal.log = conversa_log
-                            session.add(conversa_signal)
-                            session.commit()
-                            session.refresh(conversa_signal)
+                            conversa_signal = utils.manipular_db(session, conversa_signal)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Erro ao listar mensagens do Signal: {str(e)}")
         messages = list(conversa_signal.log.values())
@@ -395,10 +363,8 @@ async def exibir_mensagens(chat_id: str, session: SessionDep, token: Annotated[s
 async def enviar_mensagem(chat_id: str, session: SessionDep, payload: EnviarMensagem, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     if payload.app.lower() == "telegram":
@@ -431,9 +397,7 @@ async def enviar_mensagem(chat_id: str, session: SessionDep, payload: EnviarMens
                 }
                 conversa_log[f"mensagem{timestamp}"] = msg
                 conversa_signal.log = conversa_log
-                session.add(conversa_signal)
-                session.commit()
-                session.refresh(conversa_signal)
+                conversa_signal = utils.manipular_db(session, conversa_signal)
             return {"status": "success", "message": "Mensagem enviada com sucesso!"}
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Erro ao enviar mensagem: {str(e)}")
@@ -444,10 +408,8 @@ async def enviar_mensagem(chat_id: str, session: SessionDep, payload: EnviarMens
 async def deletar_mensagem(chat_id: str, payload: DeletarMensagem, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     if payload.app.lower() == "telegram":
@@ -464,10 +426,8 @@ async def deletar_mensagem(chat_id: str, payload: DeletarMensagem, token: Annota
 async def editar_mensagem(chat_id: str, payload: EditarMensagem, token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     if payload.app.lower() == "telegram":
@@ -484,10 +444,10 @@ async def editar_mensagem(chat_id: str, payload: EditarMensagem, token: Annotate
 async def send_code_tg(payload: ConectarNumero, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     telefone = payload.numero.strip()
 
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
     
     statement = select(Conta).where(Conta.cod_usuario == user_id, Conta.usuario_app == telefone, Conta.aplicativo == "Telegram")
@@ -521,6 +481,12 @@ async def send_code_tg(payload: ConectarNumero, session: SessionDep, token: Anno
 @app.post("/auth/tg/sign-in")
 async def sign_in_tg(payload: SessaoTG, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     telefone = payload.numero.strip()
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    user_id = utils.validar_token(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token inválido")
     
     if telefone not in logins_tg:
         raise HTTPException(
@@ -541,12 +507,6 @@ async def sign_in_tg(payload: SessaoTG, session: SessionDep, token: Annotated[st
         
         del logins_tg[telefone]
 
-        try:
-                decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-                user_id = decode_token.get("user_id")
-        except jwt.PyJWTError:
-                raise HTTPException(status_code=401, detail="Token inválido")
-
         conta = Conta(
             cod_usuario=user_id,
             aplicativo="Telegram",
@@ -554,9 +514,7 @@ async def sign_in_tg(payload: SessaoTG, session: SessionDep, token: Annotated[st
             sessao=client.session.save()
         )
 
-        session.add(conta)
-        session.commit()
-        session.refresh(conta)
+        conta = utils.manipular_db(session, conta)
 
         async for dialog in client.iter_dialogs(limit=50):
             if isinstance(dialog.entity, User):
@@ -574,9 +532,7 @@ async def sign_in_tg(payload: SessaoTG, session: SessionDep, token: Annotated[st
                 nome_chat=nome
             )
             if not session.exec(select(Conversa).where(Conversa.cod_usuario == user_id, Conversa.chat_id == dialog.id)).first():
-                session.add(conversa)
-                session.commit()
-                session.refresh(conversa)
+                conversa = utils.manipular_db(session, conversa)
         
         return "Autenticação concluída com sucesso!"
     
@@ -586,11 +542,11 @@ async def sign_in_tg(payload: SessaoTG, session: SessionDep, token: Annotated[st
 @app.post("/auth/signal/sign-in")
 async def sign_in_signal(payload: ConectarNumero, session: SessionDep, token: Annotated[str, Depends(oauth2_scheme)]):
     telefone = payload.numero.strip()
-    
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
 
     conta = Conta(
@@ -600,9 +556,7 @@ async def sign_in_signal(payload: ConectarNumero, session: SessionDep, token: An
                 sessao="Sem sessão"
             )
 
-    session.add(conta)
-    session.commit()
-    session.refresh(conta)
+    conta = utils.manipular_db(session, conta)
 
     clients_signal[user_id] = SignalCliRestApi(SIGNAL_SERVER, telefone)
     
@@ -646,9 +600,7 @@ async def redefinir_senha(dados: RedefinirSenha, session: SessionDep):
             raise HTTPException(status_code=404, detail="User not found")
         else:
             usuario.senha = bcrypt.hashpw(dados.nova_senha.encode(), bcrypt.gensalt())
-            session.add(usuario)
-            session.commit()
-            session.refresh(usuario)
+            usuario = utils.manipular_db(session, usuario)
             return "Senha redefinida com sucesso!"
     except Exception as e:
         return "Erro ao redefinir senha: {str(e)}"
@@ -657,10 +609,8 @@ async def redefinir_senha(dados: RedefinirSenha, session: SessionDep):
 async def logout(token: Annotated[str, Depends(oauth2_scheme)]):
     if not token:
         raise HTTPException(status_code=401, detail="Token não fornecido")
-    try:
-        decode_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = decode_token.get("user_id")
-    except jwt.PyJWTError:
+    user_id = utils.validar_token(token)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Token inválido")
     
     if user_id in clients_tg:
