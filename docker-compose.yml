@@ -22,6 +22,8 @@ services:
     container_name: "fastapi-backend"
     build:
       context: ./backend
+    volumes:
+      - "./db:/app/db"
     ports:
       - "8000:8000"
   signal-api:

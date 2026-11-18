@@ -48,8 +48,8 @@ app = FastAPI(lifespan=lifespan)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login/")
 
-sqlite_file_name = "users.db"
-sqlite_url = f"sqlite:///{sqlite_file_name}"
+db_path = "app/db/communihub.db"
+sqlite_url = f"sqlite:////{db_path}"
 connect_args = {"check_same_thread": False}
 engine = create_engine(sqlite_url, connect_args=connect_args)
  
