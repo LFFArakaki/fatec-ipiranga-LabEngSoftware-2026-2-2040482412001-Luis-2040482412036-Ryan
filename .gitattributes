@@ -1,0 +1,2 @@
+*.sh text eol=lf
+signal-api/s6-services/**/run text eol=lf
